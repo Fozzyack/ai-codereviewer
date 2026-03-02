@@ -68,6 +68,33 @@ It can also include a deterministic "Fix Prompt" section in the summary, built f
 references, so you can copy it directly into an AI coding agent. By default, the summary/fix prompt is posted only once
 per pull request, while inline comments continue on later updates.
 
+## Repository Structure and Code Flow
+
+### Repository Structure
+
+- `src/index.ts`: Main orchestrator and runtime entrypoint used by the packaged action.
+- `src/main.ts`: Compatibility export surface for existing imports/tests.
+- `src/config/inputs.ts`: Reads and validates GitHub Action inputs.
+- `src/github/event.ts`: Parses and validates the GitHub event payload.
+- `src/github/review.ts`: GitHub API operations (PR details, diff retrieval, review posting).
+- `src/openai/review.ts`: OpenAI calls and AI review response parsing.
+- `src/review/analyze.ts`: Coordinates per-file/per-chunk review analysis.
+- `src/review/diff.ts`: Diff filtering and inline comment line mapping helpers.
+- `src/review/prompts.ts`: Prompt construction for inline reviews, summaries, and fix prompts.
+- `src/types/index.ts`: Shared TypeScript interfaces used across modules.
+- `test/unit` and `test/integration`: Unit and integration coverage for behavior and flow.
+
+### Code Flow
+
+1. The action starts in `src/index.ts` and loads runtime config from action inputs.
+2. GitHub event JSON is read and validated from `GITHUB_EVENT_PATH`.
+3. PR metadata and diff content are fetched using the GitHub API.
+4. Diff files are filtered using configured exclude patterns.
+5. For each diff chunk, the action builds a review prompt and requests AI feedback.
+6. AI responses are validated and mapped to commentable lines in changed files.
+7. The action optionally generates an overall PR summary and deterministic fix prompt.
+8. Inline comments and summary content are posted as a GitHub review.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues or pull requests to improve the AI Code Reviewer GitHub
