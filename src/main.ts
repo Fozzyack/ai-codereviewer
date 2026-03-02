@@ -15,7 +15,7 @@ const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
 });
 
-interface PRDetails {
+export interface PRDetails {
   owner: string;
   repo: string;
   pull_number: number;
@@ -23,12 +23,12 @@ interface PRDetails {
   description: string;
 }
 
-interface AIReview {
+export interface AIReview {
   lineNumber: number;
   reviewComment: string;
 }
 
-function getRequiredEventPath(): string {
+export function getRequiredEventPath(): string {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath) {
     throw new Error("GITHUB_EVENT_PATH is not set");
@@ -91,7 +91,7 @@ async function analyzeCode(
   return comments;
 }
 
-function getCommentableLines(chunk: Chunk): Set<number> {
+export function getCommentableLines(chunk: Chunk): Set<number> {
   const lines = new Set<number>();
   for (const change of chunk.changes) {
     if (change.type === "del") continue;
@@ -104,7 +104,10 @@ function getCommentableLines(chunk: Chunk): Set<number> {
   return lines;
 }
 
-function createSummaryPrompt(parsedDiff: File[], prDetails: PRDetails): string {
+export function createSummaryPrompt(
+  parsedDiff: File[],
+  prDetails: PRDetails
+): string {
   const MAX_DIFF_CHARS = 12000;
 
   const summarizedDiff = parsedDiff
@@ -142,7 +145,11 @@ ${summarizedDiff}
 \`\`\``;
 }
 
-function createPrompt(file: File, chunk: Chunk, prDetails: PRDetails): string {
+export function createPrompt(
+  file: File,
+  chunk: Chunk,
+  prDetails: PRDetails
+): string {
   const commentableLines = Array.from(getCommentableLines(chunk)).sort(
     (a, b) => a - b
   );
@@ -179,7 +186,36 @@ ${chunk.changes
 `;
 }
 
-async function getAIResponse(prompt: string): Promise<Array<{
+export function parseAIReviewsContent(content: string): AIReview[] {
+  const parsed = JSON.parse(content);
+  const rawReviews: unknown[] = Array.isArray(parsed.reviews)
+    ? parsed.reviews
+    : [];
+
+  return rawReviews
+    .map((review: unknown) => {
+      const typedReview = review as Partial<AIReview>;
+      const lineNumber = Number(typedReview.lineNumber);
+      const reviewComment =
+        typeof typedReview.reviewComment === "string"
+          ? typedReview.reviewComment
+          : "";
+      if (
+        !Number.isFinite(lineNumber) ||
+        lineNumber <= 0 ||
+        !reviewComment.trim()
+      ) {
+        return null;
+      }
+      return {
+        lineNumber,
+        reviewComment,
+      };
+    })
+    .filter((review): review is AIReview => review !== null);
+}
+
+export async function getAIResponse(prompt: string): Promise<Array<{
   lineNumber: number;
   reviewComment: string;
 }> | null> {
@@ -208,32 +244,7 @@ async function getAIResponse(prompt: string): Promise<Array<{
     });
 
     const res = response.choices[0]?.message?.content?.trim() || "{}";
-    const parsed = JSON.parse(res);
-    const rawReviews: unknown[] = Array.isArray(parsed.reviews)
-      ? parsed.reviews
-      : [];
-
-    return rawReviews
-      .map((review: unknown) => {
-        const typedReview = review as Partial<AIReview>;
-        const lineNumber = Number(typedReview.lineNumber);
-        const reviewComment =
-          typeof typedReview.reviewComment === "string"
-            ? typedReview.reviewComment
-            : "";
-        if (
-          !Number.isFinite(lineNumber) ||
-          lineNumber <= 0 ||
-          !reviewComment.trim()
-        ) {
-          return null;
-        }
-        return {
-          lineNumber,
-          reviewComment,
-        };
-      })
-      .filter((review): review is AIReview => review !== null);
+    return parseAIReviewsContent(res);
   } catch (error) {
     console.error("Error:", error);
     return null;
@@ -269,7 +280,7 @@ async function getAISummary(prompt: string): Promise<string | null> {
   }
 }
 
-function createComment(
+export function createComment(
   file: File,
   chunk: Chunk,
   aiResponses: AIReview[]
@@ -291,7 +302,7 @@ function createComment(
   });
 }
 
-async function createReviewComment(
+export async function createReviewComment(
   owner: string,
   repo: string,
   pull_number: number,
@@ -346,7 +357,23 @@ async function createReviewComment(
   }
 }
 
-async function main() {
+export function filterDiffByExclude(
+  parsedDiff: File[],
+  excludeInput: string
+): File[] {
+  const excludePatterns = excludeInput
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  return parsedDiff.filter((file) => {
+    return !excludePatterns.some((pattern) =>
+      minimatch(file.to ?? "", pattern)
+    );
+  });
+}
+
+export async function main() {
   const prDetails = await getPRDetails();
   let diff: string | null;
   const eventData = JSON.parse(readFileSync(getRequiredEventPath(), "utf8"));
@@ -384,16 +411,10 @@ async function main() {
 
   const parsedDiff = parseDiff(diff);
 
-  const excludePatterns = core
-    .getInput("exclude")
-    .split(",")
-    .map((s) => s.trim());
-
-  const filteredDiff = parsedDiff.filter((file) => {
-    return !excludePatterns.some((pattern) =>
-      minimatch(file.to ?? "", pattern)
-    );
-  });
+  const filteredDiff = filterDiffByExclude(
+    parsedDiff,
+    core.getInput("exclude")
+  );
 
   const comments = await analyzeCode(filteredDiff, prDetails);
   const summaryPrompt = createSummaryPrompt(filteredDiff, prDetails);
@@ -408,7 +429,9 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error("Error:", error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("Error:", error);
+    process.exit(1);
+  });
+}

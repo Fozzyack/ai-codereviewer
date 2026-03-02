@@ -1,0 +1,12 @@
+{
+  "action": "synchronize",
+  "before": "1111111111111111111111111111111111111111",
+  "after": "2222222222222222222222222222222222222222",
+  "number": 42,
+  "repository": {
+    "name": "ai-codereviewer",
+    "owner": {
+      "login": "octo-org"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "action": "opened",
+  "number": 42,
+  "repository": {
+    "name": "ai-codereviewer",
+    "owner": {
+      "login": "octo-org"
+    }
+  }
+}
