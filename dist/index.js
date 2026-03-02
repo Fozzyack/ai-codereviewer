@@ -1,7 +1,122 @@
 require('./sourcemap-register.js');/******/ (() => { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
-/***/ 3109:
+/***/ 8762:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.loadRuntimeConfig = exports.getBoundedIntInput = exports.getOptionalInput = exports.getRequiredInput = void 0;
+const core = __importStar(__nccwpck_require__(2186));
+const MODEL_ID_PATTERN = /^[a-zA-Z0-9._:-]+$/;
+function getRequiredInput(name) {
+    return core.getInput(name, { required: true }).trim();
+}
+exports.getRequiredInput = getRequiredInput;
+function getOptionalInput(name, fallback) {
+    const input = core.getInput(name).trim();
+    return input || fallback;
+}
+exports.getOptionalInput = getOptionalInput;
+function getBoundedIntInput(name, fallback, min, max) {
+    const input = core.getInput(name).trim();
+    if (!input) {
+        return fallback;
+    }
+    const parsed = Number.parseInt(input, 10);
+    if (!Number.isFinite(parsed)) {
+        core.warning(`${name} must be an integer between ${min} and ${max}. Falling back to ${fallback}.`);
+        return fallback;
+    }
+    if (parsed < min) {
+        core.warning(`${name} must be at least ${min}. Using ${min}.`);
+        return min;
+    }
+    if (parsed > max) {
+        core.warning(`${name} must be at most ${max}. Using ${max}.`);
+        return max;
+    }
+    return parsed;
+}
+exports.getBoundedIntInput = getBoundedIntInput;
+function loadRuntimeConfig() {
+    const openAiApiModel = getOptionalInput("OPENAI_API_MODEL", "gpt-4");
+    if (!MODEL_ID_PATTERN.test(openAiApiModel)) {
+        throw new Error("OPENAI_API_MODEL contains invalid characters. Use letters, numbers, '.', '_', '-', or ':'.");
+    }
+    return {
+        githubToken: getRequiredInput("GITHUB_TOKEN"),
+        openAiApiKey: getRequiredInput("OPENAI_API_KEY"),
+        openAiApiModel,
+        includeFixPrompt: core.getInput("include_fix_prompt").trim().toLowerCase() !== "false",
+        summaryOnce: core.getInput("summary_once").trim().toLowerCase() !== "false",
+        fixPromptMaxItems: getBoundedIntInput("fix_prompt_max_items", 20, 1, 200),
+        excludeInput: core.getInput("exclude"),
+    };
+}
+exports.loadRuntimeConfig = loadRuntimeConfig;
+
+
+/***/ }),
+
+/***/ 1179:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getEventData = exports.getRequiredEventPath = void 0;
+const fs_1 = __nccwpck_require__(7147);
+function getRequiredEventPath() {
+    const eventPath = process.env.GITHUB_EVENT_PATH;
+    if (!eventPath) {
+        throw new Error("GITHUB_EVENT_PATH is not set");
+    }
+    return eventPath;
+}
+exports.getRequiredEventPath = getRequiredEventPath;
+function getEventData() {
+    var _a, _b, _c;
+    const eventRaw = (0, fs_1.readFileSync)(getRequiredEventPath(), "utf8");
+    const eventData = JSON.parse(eventRaw);
+    if (!((_b = (_a = eventData.repository) === null || _a === void 0 ? void 0 : _a.owner) === null || _b === void 0 ? void 0 : _b.login) ||
+        !((_c = eventData.repository) === null || _c === void 0 ? void 0 : _c.name) ||
+        typeof eventData.number !== "number" ||
+        !eventData.action) {
+        throw new Error("GitHub event payload is missing required pull request fields");
+    }
+    return eventData;
+}
+exports.getEventData = getEventData;
+
+
+/***/ }),
+
+/***/ 2691:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -38,78 +153,10 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-const fs_1 = __nccwpck_require__(7147);
+exports.createReviewComment = exports.hasExistingSummaryReview = exports.getSynchronizeDiff = exports.getDiff = exports.getPRDetails = void 0;
 const core = __importStar(__nccwpck_require__(2186));
-const openai_1 = __importDefault(__nccwpck_require__(47));
-const rest_1 = __nccwpck_require__(5375);
-const parse_diff_1 = __importDefault(__nccwpck_require__(4833));
-const minimatch_1 = __importDefault(__nccwpck_require__(2002));
-function getRequiredInput(name) {
-    return core.getInput(name, { required: true }).trim();
-}
-function getOptionalInput(name, fallback) {
-    const input = core.getInput(name).trim();
-    return input || fallback;
-}
-function getBoundedIntInput(name, fallback, min, max) {
-    const input = core.getInput(name).trim();
-    if (!input) {
-        return fallback;
-    }
-    const parsed = Number.parseInt(input, 10);
-    if (!Number.isFinite(parsed)) {
-        core.warning(`${name} must be an integer between ${min} and ${max}. Falling back to ${fallback}.`);
-        return fallback;
-    }
-    if (parsed < min) {
-        core.warning(`${name} must be at least ${min}. Using ${min}.`);
-        return min;
-    }
-    if (parsed > max) {
-        core.warning(`${name} must be at most ${max}. Using ${max}.`);
-        return max;
-    }
-    return parsed;
-}
-const MODEL_ID_PATTERN = /^[a-zA-Z0-9._:-]+$/;
-const GITHUB_TOKEN = getRequiredInput("GITHUB_TOKEN");
-const OPENAI_API_KEY = getRequiredInput("OPENAI_API_KEY");
-const OPENAI_API_MODEL = getOptionalInput("OPENAI_API_MODEL", "gpt-4");
-const INCLUDE_FIX_PROMPT = core.getInput("include_fix_prompt").trim().toLowerCase() !== "false";
-const SUMMARY_ONCE = core.getInput("summary_once").trim().toLowerCase() !== "false";
-const FIX_PROMPT_MAX_ITEMS = getBoundedIntInput("fix_prompt_max_items", 20, 1, 200);
-const SUMMARY_MARKER = "<!-- ai-code-reviewer-summary -->";
-if (!MODEL_ID_PATTERN.test(OPENAI_API_MODEL)) {
-    throw new Error("OPENAI_API_MODEL contains invalid characters. Use letters, numbers, '.', '_', '-', or ':'.");
-}
-const octokit = new rest_1.Octokit({ auth: GITHUB_TOKEN });
-const openai = new openai_1.default({
-    apiKey: OPENAI_API_KEY,
-});
-function getRequiredEventPath() {
-    const eventPath = process.env.GITHUB_EVENT_PATH;
-    if (!eventPath) {
-        throw new Error("GITHUB_EVENT_PATH is not set");
-    }
-    return eventPath;
-}
-function getEventData() {
-    var _a, _b, _c;
-    const eventRaw = (0, fs_1.readFileSync)(getRequiredEventPath(), "utf8");
-    const eventData = JSON.parse(eventRaw);
-    if (!((_b = (_a = eventData.repository) === null || _a === void 0 ? void 0 : _a.owner) === null || _b === void 0 ? void 0 : _b.login) ||
-        !((_c = eventData.repository) === null || _c === void 0 ? void 0 : _c.name) ||
-        typeof eventData.number !== "number" ||
-        !eventData.action) {
-        throw new Error("GitHub event payload is missing required pull request fields");
-    }
-    return eventData;
-}
-function getPRDetails(eventData) {
+function getPRDetails(octokit, eventData) {
     var _a, _b;
     return __awaiter(this, void 0, void 0, function* () {
         const { repository, number } = eventData;
@@ -127,121 +174,258 @@ function getPRDetails(eventData) {
         };
     });
 }
-function getDiff(owner, repo, pull_number) {
+exports.getPRDetails = getPRDetails;
+function getDiff(octokit, owner, repo, pullNumber) {
     return __awaiter(this, void 0, void 0, function* () {
         const response = yield octokit.pulls.get({
             owner,
             repo,
-            pull_number,
+            pull_number: pullNumber,
             mediaType: { format: "diff" },
         });
         // @ts-expect-error - response.data is a string
         return response.data;
     });
 }
-function analyzeCode(parsedDiff, prDetails) {
+exports.getDiff = getDiff;
+function getSynchronizeDiff(octokit, owner, repo, base, head) {
     return __awaiter(this, void 0, void 0, function* () {
-        const comments = [];
-        for (const file of parsedDiff) {
-            if (file.to === "/dev/null")
-                continue; // Ignore deleted files
-            for (const chunk of file.chunks) {
-                const prompt = createPrompt(file, chunk, prDetails);
-                const aiResponse = yield getAIResponse(prompt);
-                if (aiResponse) {
-                    const newComments = createComment(file, chunk, aiResponse);
-                    if (newComments) {
-                        comments.push(...newComments);
-                    }
-                }
-            }
-        }
-        return comments;
+        const response = yield octokit.repos.compareCommits({
+            headers: {
+                accept: "application/vnd.github.v3.diff",
+            },
+            owner,
+            repo,
+            base,
+            head,
+        });
+        return String(response.data);
     });
 }
-function getCommentableLines(chunk) {
-    const lines = new Set();
-    for (const change of chunk.changes) {
-        if (change.type === "del")
-            continue;
-        // @ts-expect-error - ln2 exists on non-deleted changes
-        if (typeof change.ln2 === "number") {
-            // @ts-expect-error - ln2 exists on non-deleted changes
-            lines.add(change.ln2);
+exports.getSynchronizeDiff = getSynchronizeDiff;
+function hasExistingSummaryReview(octokit, owner, repo, pullNumber, summaryMarker) {
+    return __awaiter(this, void 0, void 0, function* () {
+        let page = 1;
+        while (true) {
+            const response = yield octokit.pulls.listReviews({
+                owner,
+                repo,
+                pull_number: pullNumber,
+                per_page: 100,
+                page,
+            });
+            const hasSummary = response.data.some((review) => {
+                const body = review.body || "";
+                return (body.includes(summaryMarker) ||
+                    body.includes("## Fix Prompt") ||
+                    body.includes("### Summary of Pull Request Review"));
+            });
+            if (hasSummary) {
+                return true;
+            }
+            if (response.data.length < 100) {
+                return false;
+            }
+            page += 1;
         }
-    }
-    return lines;
+    });
 }
-function createSummaryPrompt(parsedDiff, prDetails) {
-    const MAX_DIFF_CHARS = 12000;
-    const summarizedDiff = parsedDiff
-        .map((file) => {
-        const chunkPreview = file.chunks
-            .slice(0, 3)
-            .map((chunk) => chunk.content)
-            .join("\n");
-        return `File: ${file.to}\n${chunkPreview}`;
-    })
-        .join("\n\n")
-        .slice(0, MAX_DIFF_CHARS);
-    const usedChars = summarizedDiff.length;
-    return `You are reviewing a pull request. Provide a concise GitHub Markdown summary.
-
-Instructions:
-- Focus on the overall impact, key risks, and recommended follow-up checks.
-- If there are no major concerns, explicitly say that no critical issues were found.
-- Do not provide compliments or mention writing code comments.
-- Keep it short: 3 to 6 bullet points.
-
-Pull request title: ${prDetails.title}
-Pull request description:
-
----
-${prDetails.description}
----
-
-Changed files and diff excerpts (truncated to ${usedChars} chars):
-
-\`\`\`diff
-${summarizedDiff}
-\`\`\``;
+exports.hasExistingSummaryReview = hasExistingSummaryReview;
+function createReviewComment(octokit, owner, repo, pullNumber, comments, summaryBody) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const reviewPayload = {
+            owner,
+            repo,
+            pull_number: pullNumber,
+            event: "COMMENT",
+        };
+        if (comments.length > 0) {
+            reviewPayload.comments = comments;
+        }
+        if (summaryBody) {
+            reviewPayload.body = summaryBody;
+        }
+        if (!reviewPayload.comments && !reviewPayload.body) {
+            core.info("No summary or inline comments to post.");
+            return;
+        }
+        try {
+            yield octokit.pulls.createReview(reviewPayload);
+        }
+        catch (error) {
+            const status = error.status;
+            if (status === 422 && reviewPayload.body) {
+                core.warning("Some inline comments could not be resolved. Retrying with summary only.");
+                yield octokit.pulls.createReview({
+                    owner,
+                    repo,
+                    pull_number: pullNumber,
+                    event: "COMMENT",
+                    body: reviewPayload.body,
+                });
+                return;
+            }
+            throw error;
+        }
+    });
 }
-function createPrompt(file, chunk, prDetails) {
-    const commentableLines = Array.from(getCommentableLines(chunk)).sort((a, b) => a - b);
-    return `Your task is to review pull requests. Instructions:
-- Provide the response in following JSON format:  {"reviews": [{"lineNumber":  <line_number>, "reviewComment": "<review comment>"}]}
-- Do not give positive comments or compliments.
-- Provide comments and suggestions ONLY if there is something to improve, otherwise "reviews" should be an empty array.
-- Write the comment in GitHub Markdown format.
-- Use the given description only for the overall context and only comment the code.
-- IMPORTANT: NEVER suggest adding comments to the code.
-- Only use line numbers that are in this list: [${commentableLines.join(", ")}]
+exports.createReviewComment = createReviewComment;
 
-Review the following code diff in the file "${file.to}" and take the pull request title and description into account when writing the response.
-  
-Pull request title: ${prDetails.title}
-Pull request description:
 
----
-${prDetails.description}
----
+/***/ }),
 
-Git diff to review:
+/***/ 4822:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
-\`\`\`diff
-${chunk.content}
-${chunk.changes
-        // @ts-expect-error - ln and ln2 exists where needed
-        .map((c) => `${c.ln ? c.ln : c.ln2} ${c.content}`)
-        .join("\n")}
-\`\`\`
-`;
+"use strict";
+
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.main = exports.createReviewComment = exports.getAIResponse = exports.filterDiffByExclude = exports.createComment = exports.createCommentForChunk = exports.getCommentableLines = exports.getCommentableLinesForChunk = exports.parseAIReviewsContent = exports.createSummaryPrompt = exports.createPrompt = exports.getRequiredEventPath = void 0;
+const rest_1 = __nccwpck_require__(5375);
+const openai_1 = __importDefault(__nccwpck_require__(47));
+const parse_diff_1 = __importDefault(__nccwpck_require__(4833));
+const inputs_1 = __nccwpck_require__(8762);
+const event_1 = __nccwpck_require__(1179);
+Object.defineProperty(exports, "getRequiredEventPath", ({ enumerable: true, get: function () { return event_1.getRequiredEventPath; } }));
+const review_1 = __nccwpck_require__(2691);
+const review_2 = __nccwpck_require__(7373);
+Object.defineProperty(exports, "parseAIReviewsContent", ({ enumerable: true, get: function () { return review_2.parseAIReviewsContent; } }));
+const analyze_1 = __nccwpck_require__(3189);
+const diff_1 = __nccwpck_require__(2840);
+Object.defineProperty(exports, "filterDiffByExclude", ({ enumerable: true, get: function () { return diff_1.filterDiffByExclude; } }));
+const prompts_1 = __nccwpck_require__(8338);
+Object.defineProperty(exports, "createPrompt", ({ enumerable: true, get: function () { return prompts_1.createPrompt; } }));
+Object.defineProperty(exports, "createSummaryPrompt", ({ enumerable: true, get: function () { return prompts_1.createSummaryPrompt; } }));
+const SUMMARY_MARKER = "<!-- ai-code-reviewer-summary -->";
+const runtimeConfig = (0, inputs_1.loadRuntimeConfig)();
+const octokit = new rest_1.Octokit({ auth: runtimeConfig.githubToken });
+const openai = new openai_1.default({ apiKey: runtimeConfig.openAiApiKey });
+function getCommentableLinesForChunk(chunk) {
+    return (0, diff_1.getCommentableLines)(chunk);
 }
+exports.getCommentableLinesForChunk = getCommentableLinesForChunk;
+exports.getCommentableLines = getCommentableLinesForChunk;
+function createCommentForChunk(file, chunk, aiResponses) {
+    return (0, diff_1.createComment)(file, chunk, aiResponses);
+}
+exports.createCommentForChunk = createCommentForChunk;
+exports.createComment = createCommentForChunk;
 function getAIResponse(prompt) {
+    return __awaiter(this, void 0, void 0, function* () {
+        return (0, review_2.getAIResponse)(openai, runtimeConfig.openAiApiModel, prompt);
+    });
+}
+exports.getAIResponse = getAIResponse;
+function createReviewComment(owner, repo, pullNumber, comments, summaryBody) {
+    return __awaiter(this, void 0, void 0, function* () {
+        return (0, review_1.createReviewComment)(octokit, owner, repo, pullNumber, comments, summaryBody);
+    });
+}
+exports.createReviewComment = createReviewComment;
+function main() {
+    return __awaiter(this, void 0, void 0, function* () {
+        const eventData = (0, event_1.getEventData)();
+        const prDetails = yield (0, review_1.getPRDetails)(octokit, eventData);
+        let diff;
+        if (eventData.action === "opened") {
+            diff = yield (0, review_1.getDiff)(octokit, prDetails.owner, prDetails.repo, prDetails.pull_number);
+        }
+        else if (eventData.action === "synchronize") {
+            const newBaseSha = eventData.before;
+            const newHeadSha = eventData.after;
+            if (!newBaseSha || !newHeadSha) {
+                throw new Error("Missing before/after SHAs for synchronize event");
+            }
+            diff = yield (0, review_1.getSynchronizeDiff)(octokit, prDetails.owner, prDetails.repo, newBaseSha, newHeadSha);
+        }
+        else {
+            console.log("Unsupported event:", process.env.GITHUB_EVENT_NAME);
+            return;
+        }
+        if (!diff) {
+            console.log("No diff found");
+            return;
+        }
+        const parsedDiff = (0, parse_diff_1.default)(diff);
+        const filteredDiff = (0, diff_1.filterDiffByExclude)(parsedDiff, runtimeConfig.excludeInput);
+        const comments = yield (0, analyze_1.analyzeCode)(filteredDiff, prDetails, getAIResponse);
+        const shouldIncludeSummary = runtimeConfig.summaryOnce
+            ? !(yield (0, review_1.hasExistingSummaryReview)(octokit, prDetails.owner, prDetails.repo, prDetails.pull_number, SUMMARY_MARKER))
+            : true;
+        const summary = shouldIncludeSummary
+            ? yield (0, review_2.getAISummary)(openai, runtimeConfig.openAiApiModel, (0, prompts_1.createSummaryPrompt)(filteredDiff, prDetails))
+            : null;
+        const fixPromptSection = shouldIncludeSummary && runtimeConfig.includeFixPrompt
+            ? (0, prompts_1.createFixPromptSection)(comments, prDetails, runtimeConfig.fixPromptMaxItems)
+            : null;
+        const reviewBody = (0, prompts_1.buildReviewBody)(summary, fixPromptSection, SUMMARY_MARKER);
+        yield createReviewComment(prDetails.owner, prDetails.repo, prDetails.pull_number, comments, reviewBody);
+    });
+}
+exports.main = main;
+if (false) {}
+
+
+/***/ }),
+
+/***/ 7373:
+/***/ (function(__unused_webpack_module, exports) {
+
+"use strict";
+
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getAISummary = exports.getAIResponse = exports.parseAIReviewsContent = void 0;
+function parseAIReviewsContent(content) {
+    const parsed = JSON.parse(content);
+    const rawReviews = Array.isArray(parsed.reviews)
+        ? parsed.reviews
+        : [];
+    return rawReviews
+        .map((review) => {
+        const typedReview = review;
+        const lineNumber = Number(typedReview.lineNumber);
+        const reviewComment = typeof typedReview.reviewComment === "string"
+            ? typedReview.reviewComment
+            : "";
+        if (!Number.isFinite(lineNumber) ||
+            lineNumber <= 0 ||
+            !reviewComment.trim()) {
+            return null;
+        }
+        return {
+            lineNumber,
+            reviewComment,
+        };
+    })
+        .filter((review) => review !== null);
+}
+exports.parseAIReviewsContent = parseAIReviewsContent;
+function getAIResponse(openai, openAiApiModel, prompt) {
     var _a, _b, _c;
     return __awaiter(this, void 0, void 0, function* () {
         const queryConfig = {
-            model: OPENAI_API_MODEL,
+            model: openAiApiModel,
             temperature: 0.2,
             max_tokens: 700,
             top_p: 1,
@@ -249,7 +433,7 @@ function getAIResponse(prompt) {
             presence_penalty: 0,
         };
         try {
-            const response = yield openai.chat.completions.create(Object.assign(Object.assign(Object.assign({}, queryConfig), (OPENAI_API_MODEL === "gpt-4-1106-preview"
+            const response = yield openai.chat.completions.create(Object.assign(Object.assign(Object.assign({}, queryConfig), (openAiApiModel === "gpt-4-1106-preview"
                 ? { response_format: { type: "json_object" } }
                 : {})), { messages: [
                     {
@@ -258,28 +442,7 @@ function getAIResponse(prompt) {
                     },
                 ] }));
             const res = ((_c = (_b = (_a = response.choices[0]) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.content) === null || _c === void 0 ? void 0 : _c.trim()) || "{}";
-            const parsed = JSON.parse(res);
-            const rawReviews = Array.isArray(parsed.reviews)
-                ? parsed.reviews
-                : [];
-            return rawReviews
-                .map((review) => {
-                const typedReview = review;
-                const lineNumber = Number(typedReview.lineNumber);
-                const reviewComment = typeof typedReview.reviewComment === "string"
-                    ? typedReview.reviewComment
-                    : "";
-                if (!Number.isFinite(lineNumber) ||
-                    lineNumber <= 0 ||
-                    !reviewComment.trim()) {
-                    return null;
-                }
-                return {
-                    lineNumber,
-                    reviewComment,
-                };
-            })
-                .filter((review) => review !== null);
+            return parseAIReviewsContent(res);
         }
         catch (error) {
             console.error("Error:", error);
@@ -287,11 +450,12 @@ function getAIResponse(prompt) {
         }
     });
 }
-function getAISummary(prompt) {
+exports.getAIResponse = getAIResponse;
+function getAISummary(openai, openAiApiModel, prompt) {
     var _a, _b, _c;
     return __awaiter(this, void 0, void 0, function* () {
         const queryConfig = {
-            model: OPENAI_API_MODEL,
+            model: openAiApiModel,
             temperature: 0.2,
             max_tokens: 400,
             top_p: 1,
@@ -314,6 +478,80 @@ function getAISummary(prompt) {
         }
     });
 }
+exports.getAISummary = getAISummary;
+
+
+/***/ }),
+
+/***/ 3189:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.analyzeCode = void 0;
+const diff_1 = __nccwpck_require__(2840);
+const prompts_1 = __nccwpck_require__(8338);
+function analyzeCode(parsedDiff, prDetails, getAIResponse) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const comments = [];
+        for (const file of parsedDiff) {
+            if (file.to === "/dev/null")
+                continue;
+            for (const chunk of file.chunks) {
+                const prompt = (0, prompts_1.createPrompt)(file, chunk, prDetails);
+                const aiResponse = yield getAIResponse(prompt);
+                if (!aiResponse) {
+                    continue;
+                }
+                const newComments = (0, diff_1.createComment)(file, chunk, aiResponse);
+                if (newComments.length > 0) {
+                    comments.push(...newComments);
+                }
+            }
+        }
+        return comments;
+    });
+}
+exports.analyzeCode = analyzeCode;
+
+
+/***/ }),
+
+/***/ 2840:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.filterDiffByExclude = exports.createComment = exports.getCommentableLines = void 0;
+const minimatch_1 = __importDefault(__nccwpck_require__(2002));
+function getCommentableLines(chunk) {
+    const lines = new Set();
+    for (const change of chunk.changes) {
+        if (change.type === "del")
+            continue;
+        // @ts-expect-error - ln2 exists on non-deleted changes
+        if (typeof change.ln2 === "number") {
+            // @ts-expect-error - ln2 exists on non-deleted changes
+            lines.add(change.ln2);
+        }
+    }
+    return lines;
+}
+exports.getCommentableLines = getCommentableLines;
 function createComment(file, chunk, aiResponses) {
     const validLines = getCommentableLines(chunk);
     return aiResponses.flatMap((aiResponse) => {
@@ -330,6 +568,96 @@ function createComment(file, chunk, aiResponses) {
         };
     });
 }
+exports.createComment = createComment;
+function filterDiffByExclude(parsedDiff, excludeInput) {
+    const excludePatterns = excludeInput
+        .split(",")
+        .map((segment) => segment.trim())
+        .filter(Boolean);
+    return parsedDiff.filter((file) => {
+        return !excludePatterns.some((pattern) => { var _a; return (0, minimatch_1.default)((_a = file.to) !== null && _a !== void 0 ? _a : "", pattern); });
+    });
+}
+exports.filterDiffByExclude = filterDiffByExclude;
+
+
+/***/ }),
+
+/***/ 8338:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.buildReviewBody = exports.createFixPromptSection = exports.createPrompt = exports.createSummaryPrompt = void 0;
+const diff_1 = __nccwpck_require__(2840);
+function createSummaryPrompt(parsedDiff, prDetails) {
+    const maxDiffChars = 12000;
+    const summarizedDiff = parsedDiff
+        .map((file) => {
+        const chunkPreview = file.chunks
+            .slice(0, 3)
+            .map((chunk) => chunk.content)
+            .join("\n");
+        return `File: ${file.to}\n${chunkPreview}`;
+    })
+        .join("\n\n")
+        .slice(0, maxDiffChars);
+    const usedChars = summarizedDiff.length;
+    return `You are reviewing a pull request. Provide a concise GitHub Markdown summary.
+
+Instructions:
+- Focus on the overall impact, key risks, and recommended follow-up checks.
+- If there are no major concerns, explicitly say that no critical issues were found.
+- Do not provide compliments or mention writing code comments.
+- Keep it short: 3 to 6 bullet points.
+
+Pull request title: ${prDetails.title}
+Pull request description:
+
+---
+${prDetails.description}
+---
+
+Changed files and diff excerpts (truncated to ${usedChars} chars):
+
+\`\`\`diff
+${summarizedDiff}
+\`\`\``;
+}
+exports.createSummaryPrompt = createSummaryPrompt;
+function createPrompt(file, chunk, prDetails) {
+    const commentableLines = Array.from((0, diff_1.getCommentableLines)(chunk)).sort((a, b) => a - b);
+    return `Your task is to review pull requests. Instructions:
+- Provide the response in following JSON format:  {"reviews": [{"lineNumber":  <line_number>, "reviewComment": "<review comment>"}]}
+- Do not give positive comments or compliments.
+- Provide comments and suggestions ONLY if there is something to improve, otherwise "reviews" should be an empty array.
+- Write the comment in GitHub Markdown format.
+- Use the given description only for the overall context and only comment the code.
+- IMPORTANT: NEVER suggest adding comments to the code.
+- Only use line numbers that are in this list: [${commentableLines.join(", ")}]
+
+Review the following code diff in the file "${file.to}" and take the pull request title and description into account when writing the response.
+
+Pull request title: ${prDetails.title}
+Pull request description:
+
+---
+${prDetails.description}
+---
+
+Git diff to review:
+
+\`\`\`diff
+${chunk.content}
+${chunk.changes
+        // @ts-expect-error - ln and ln2 exists where needed
+        .map((change) => `${change.ln ? change.ln : change.ln2} ${change.content}`)
+        .join("\n")}
+\`\`\`
+`;
+}
+exports.createPrompt = createPrompt;
 function normalizeIssueText(text) {
     return text.replace(/\s+/g, " ").trim();
 }
@@ -350,8 +678,8 @@ function getUniqueIssues(comments) {
     }
     return issues;
 }
-function createFixPromptSection(comments, prDetails) {
-    const uniqueIssues = getUniqueIssues(comments).slice(0, FIX_PROMPT_MAX_ITEMS);
+function createFixPromptSection(comments, prDetails, maxItems) {
+    const uniqueIssues = getUniqueIssues(comments).slice(0, maxItems);
     if (uniqueIssues.length === 0) {
         return null;
     }
@@ -392,139 +720,17 @@ Use this prompt with your coding agent to address the detected issues:
 ${fixPrompt}
 \`\`\``;
 }
-function buildReviewBody(summary, fixPromptSection) {
+exports.createFixPromptSection = createFixPromptSection;
+function buildReviewBody(summary, fixPromptSection, summaryMarker) {
     const sections = [summary, fixPromptSection]
         .filter((section) => Boolean(section && section.trim()))
         .map((section) => section.trim());
     if (sections.length === 0) {
         return undefined;
     }
-    return `${sections.join("\n\n")}\n\n${SUMMARY_MARKER}`;
+    return `${sections.join("\n\n")}\n\n${summaryMarker}`;
 }
-function hasExistingSummaryReview(owner, repo, pull_number) {
-    return __awaiter(this, void 0, void 0, function* () {
-        let page = 1;
-        while (true) {
-            const response = yield octokit.pulls.listReviews({
-                owner,
-                repo,
-                pull_number,
-                per_page: 100,
-                page,
-            });
-            const hasSummary = response.data.some((review) => {
-                const body = review.body || "";
-                return (body.includes(SUMMARY_MARKER) ||
-                    body.includes("## Fix Prompt") ||
-                    body.includes("### Summary of Pull Request Review"));
-            });
-            if (hasSummary) {
-                return true;
-            }
-            if (response.data.length < 100) {
-                return false;
-            }
-            page += 1;
-        }
-    });
-}
-function createReviewComment(owner, repo, pull_number, comments, summaryBody) {
-    return __awaiter(this, void 0, void 0, function* () {
-        const reviewPayload = {
-            owner,
-            repo,
-            pull_number,
-            event: "COMMENT",
-        };
-        if (comments.length > 0) {
-            reviewPayload.comments = comments;
-        }
-        if (summaryBody) {
-            reviewPayload.body = summaryBody;
-        }
-        if (!reviewPayload.comments && !reviewPayload.body) {
-            core.info("No summary or inline comments to post.");
-            return;
-        }
-        try {
-            yield octokit.pulls.createReview(reviewPayload);
-        }
-        catch (error) {
-            const status = error.status;
-            if (status === 422 && reviewPayload.body) {
-                core.warning("Some inline comments could not be resolved. Retrying with summary only.");
-                yield octokit.pulls.createReview({
-                    owner,
-                    repo,
-                    pull_number,
-                    event: "COMMENT",
-                    body: reviewPayload.body,
-                });
-                return;
-            }
-            throw error;
-        }
-    });
-}
-function main() {
-    return __awaiter(this, void 0, void 0, function* () {
-        const eventData = getEventData();
-        const prDetails = yield getPRDetails(eventData);
-        let diff;
-        if (eventData.action === "opened") {
-            diff = yield getDiff(prDetails.owner, prDetails.repo, prDetails.pull_number);
-        }
-        else if (eventData.action === "synchronize") {
-            const newBaseSha = eventData.before;
-            const newHeadSha = eventData.after;
-            if (!newBaseSha || !newHeadSha) {
-                throw new Error("Missing before/after SHAs for synchronize event");
-            }
-            const response = yield octokit.repos.compareCommits({
-                headers: {
-                    accept: "application/vnd.github.v3.diff",
-                },
-                owner: prDetails.owner,
-                repo: prDetails.repo,
-                base: newBaseSha,
-                head: newHeadSha,
-            });
-            diff = String(response.data);
-        }
-        else {
-            console.log("Unsupported event:", process.env.GITHUB_EVENT_NAME);
-            return;
-        }
-        if (!diff) {
-            console.log("No diff found");
-            return;
-        }
-        const parsedDiff = (0, parse_diff_1.default)(diff);
-        const excludePatterns = core
-            .getInput("exclude")
-            .split(",")
-            .map((s) => s.trim());
-        const filteredDiff = parsedDiff.filter((file) => {
-            return !excludePatterns.some((pattern) => { var _a; return (0, minimatch_1.default)((_a = file.to) !== null && _a !== void 0 ? _a : "", pattern); });
-        });
-        const comments = yield analyzeCode(filteredDiff, prDetails);
-        const shouldIncludeSummary = SUMMARY_ONCE
-            ? !(yield hasExistingSummaryReview(prDetails.owner, prDetails.repo, prDetails.pull_number))
-            : true;
-        const summary = shouldIncludeSummary
-            ? yield getAISummary(createSummaryPrompt(filteredDiff, prDetails))
-            : null;
-        const fixPromptSection = shouldIncludeSummary && INCLUDE_FIX_PROMPT
-            ? createFixPromptSection(comments, prDetails)
-            : null;
-        const reviewBody = buildReviewBody(summary, fixPromptSection);
-        yield createReviewComment(prDetails.owner, prDetails.repo, prDetails.pull_number, comments, reviewBody);
-    });
-}
-main().catch((error) => {
-    console.error("Error:", error);
-    process.exit(1);
-});
+exports.buildReviewBody = buildReviewBody;
 
 
 /***/ }),
@@ -23251,13 +23457,29 @@ module.exports = JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45,46],"valid"]
 /******/ 	if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = __dirname + "/";
 /******/ 	
 /************************************************************************/
-/******/ 	
-/******/ 	// startup
-/******/ 	// Load entry module and return exports
-/******/ 	// This entry module is referenced by other modules so it can't be inlined
-/******/ 	var __webpack_exports__ = __nccwpck_require__(3109);
-/******/ 	module.exports = __webpack_exports__;
-/******/ 	
+var __webpack_exports__ = {};
+// This entry need to be wrapped in an IIFE because it need to be in strict mode.
+(() => {
+"use strict";
+var exports = __webpack_exports__;
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseAIReviewsContent = exports.main = exports.getRequiredEventPath = exports.getCommentableLines = exports.getAIResponse = exports.filterDiffByExclude = exports.createSummaryPrompt = exports.createReviewComment = exports.createPrompt = exports.createComment = void 0;
+var index_1 = __nccwpck_require__(4822);
+Object.defineProperty(exports, "createComment", ({ enumerable: true, get: function () { return index_1.createComment; } }));
+Object.defineProperty(exports, "createPrompt", ({ enumerable: true, get: function () { return index_1.createPrompt; } }));
+Object.defineProperty(exports, "createReviewComment", ({ enumerable: true, get: function () { return index_1.createReviewComment; } }));
+Object.defineProperty(exports, "createSummaryPrompt", ({ enumerable: true, get: function () { return index_1.createSummaryPrompt; } }));
+Object.defineProperty(exports, "filterDiffByExclude", ({ enumerable: true, get: function () { return index_1.filterDiffByExclude; } }));
+Object.defineProperty(exports, "getAIResponse", ({ enumerable: true, get: function () { return index_1.getAIResponse; } }));
+Object.defineProperty(exports, "getCommentableLines", ({ enumerable: true, get: function () { return index_1.getCommentableLines; } }));
+Object.defineProperty(exports, "getRequiredEventPath", ({ enumerable: true, get: function () { return index_1.getRequiredEventPath; } }));
+Object.defineProperty(exports, "main", ({ enumerable: true, get: function () { return index_1.main; } }));
+Object.defineProperty(exports, "parseAIReviewsContent", ({ enumerable: true, get: function () { return index_1.parseAIReviewsContent; } }));
+
+})();
+
+module.exports = __webpack_exports__;
 /******/ })()
 ;
 //# sourceMappingURL=index.js.map
