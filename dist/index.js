@@ -55,15 +55,23 @@ function getOptionalInput(name, fallback) {
     const input = core.getInput(name).trim();
     return input || fallback;
 }
-function getPositiveIntInput(name, fallback) {
+function getBoundedIntInput(name, fallback, min, max) {
     const input = core.getInput(name).trim();
     if (!input) {
         return fallback;
     }
     const parsed = Number.parseInt(input, 10);
-    if (!Number.isFinite(parsed) || parsed < 1) {
-        core.warning(`${name} must be a positive integer. Falling back to ${fallback}.`);
+    if (!Number.isFinite(parsed)) {
+        core.warning(`${name} must be an integer between ${min} and ${max}. Falling back to ${fallback}.`);
         return fallback;
+    }
+    if (parsed < min) {
+        core.warning(`${name} must be at least ${min}. Using ${min}.`);
+        return min;
+    }
+    if (parsed > max) {
+        core.warning(`${name} must be at most ${max}. Using ${max}.`);
+        return max;
     }
     return parsed;
 }
@@ -72,7 +80,9 @@ const GITHUB_TOKEN = getRequiredInput("GITHUB_TOKEN");
 const OPENAI_API_KEY = getRequiredInput("OPENAI_API_KEY");
 const OPENAI_API_MODEL = getOptionalInput("OPENAI_API_MODEL", "gpt-4");
 const INCLUDE_FIX_PROMPT = core.getInput("include_fix_prompt").trim().toLowerCase() !== "false";
-const FIX_PROMPT_MAX_ITEMS = getPositiveIntInput("fix_prompt_max_items", 20);
+const SUMMARY_ONCE = core.getInput("summary_once").trim().toLowerCase() !== "false";
+const FIX_PROMPT_MAX_ITEMS = getBoundedIntInput("fix_prompt_max_items", 20, 1, 200);
+const SUMMARY_MARKER = "<!-- ai-code-reviewer-summary -->";
 if (!MODEL_ID_PATTERN.test(OPENAI_API_MODEL)) {
     throw new Error("OPENAI_API_MODEL contains invalid characters. Use letters, numbers, '.', '_', '-', or ':'.");
 }
@@ -389,7 +399,34 @@ function buildReviewBody(summary, fixPromptSection) {
     if (sections.length === 0) {
         return undefined;
     }
-    return sections.join("\n\n");
+    return `${sections.join("\n\n")}\n\n${SUMMARY_MARKER}`;
+}
+function hasExistingSummaryReview(owner, repo, pull_number) {
+    return __awaiter(this, void 0, void 0, function* () {
+        let page = 1;
+        while (true) {
+            const response = yield octokit.pulls.listReviews({
+                owner,
+                repo,
+                pull_number,
+                per_page: 100,
+                page,
+            });
+            const hasSummary = response.data.some((review) => {
+                const body = review.body || "";
+                return (body.includes(SUMMARY_MARKER) ||
+                    body.includes("## Fix Prompt") ||
+                    body.includes("### Summary of Pull Request Review"));
+            });
+            if (hasSummary) {
+                return true;
+            }
+            if (response.data.length < 100) {
+                return false;
+            }
+            page += 1;
+        }
+    });
 }
 function createReviewComment(owner, repo, pull_number, comments, summaryBody) {
     return __awaiter(this, void 0, void 0, function* () {
@@ -471,9 +508,13 @@ function main() {
             return !excludePatterns.some((pattern) => { var _a; return (0, minimatch_1.default)((_a = file.to) !== null && _a !== void 0 ? _a : "", pattern); });
         });
         const comments = yield analyzeCode(filteredDiff, prDetails);
-        const summaryPrompt = createSummaryPrompt(filteredDiff, prDetails);
-        const summary = yield getAISummary(summaryPrompt);
-        const fixPromptSection = INCLUDE_FIX_PROMPT
+        const shouldIncludeSummary = SUMMARY_ONCE
+            ? !(yield hasExistingSummaryReview(prDetails.owner, prDetails.repo, prDetails.pull_number))
+            : true;
+        const summary = shouldIncludeSummary
+            ? yield getAISummary(createSummaryPrompt(filteredDiff, prDetails))
+            : null;
+        const fixPromptSection = shouldIncludeSummary && INCLUDE_FIX_PROMPT
             ? createFixPromptSection(comments, prDetails)
             : null;
         const reviewBody = buildReviewBody(summary, fixPromptSection);

@@ -14,17 +14,30 @@ function getOptionalInput(name: string, fallback: string): string {
   return input || fallback;
 }
 
-function getPositiveIntInput(name: string, fallback: number): number {
+function getBoundedIntInput(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number
+): number {
   const input = core.getInput(name).trim();
   if (!input) {
     return fallback;
   }
   const parsed = Number.parseInt(input, 10);
-  if (!Number.isFinite(parsed) || parsed < 1) {
+  if (!Number.isFinite(parsed)) {
     core.warning(
-      `${name} must be a positive integer. Falling back to ${fallback}.`
+      `${name} must be an integer between ${min} and ${max}. Falling back to ${fallback}.`
     );
     return fallback;
+  }
+  if (parsed < min) {
+    core.warning(`${name} must be at least ${min}. Using ${min}.`);
+    return min;
+  }
+  if (parsed > max) {
+    core.warning(`${name} must be at most ${max}. Using ${max}.`);
+    return max;
   }
   return parsed;
 }
@@ -35,10 +48,15 @@ const OPENAI_API_KEY: string = getRequiredInput("OPENAI_API_KEY");
 const OPENAI_API_MODEL: string = getOptionalInput("OPENAI_API_MODEL", "gpt-4");
 const INCLUDE_FIX_PROMPT: boolean =
   core.getInput("include_fix_prompt").trim().toLowerCase() !== "false";
-const FIX_PROMPT_MAX_ITEMS: number = getPositiveIntInput(
+const SUMMARY_ONCE: boolean =
+  core.getInput("summary_once").trim().toLowerCase() !== "false";
+const FIX_PROMPT_MAX_ITEMS: number = getBoundedIntInput(
   "fix_prompt_max_items",
-  20
+  20,
+  1,
+  200
 );
+const SUMMARY_MARKER = "<!-- ai-code-reviewer-summary -->";
 
 if (!MODEL_ID_PATTERN.test(OPENAI_API_MODEL)) {
   throw new Error(
@@ -457,7 +475,44 @@ function buildReviewBody(
     return undefined;
   }
 
-  return sections.join("\n\n");
+  return `${sections.join("\n\n")}\n\n${SUMMARY_MARKER}`;
+}
+
+async function hasExistingSummaryReview(
+  owner: string,
+  repo: string,
+  pull_number: number
+): Promise<boolean> {
+  let page = 1;
+
+  while (true) {
+    const response = await octokit.pulls.listReviews({
+      owner,
+      repo,
+      pull_number,
+      per_page: 100,
+      page,
+    });
+
+    const hasSummary = response.data.some((review) => {
+      const body = review.body || "";
+      return (
+        body.includes(SUMMARY_MARKER) ||
+        body.includes("## Fix Prompt") ||
+        body.includes("### Summary of Pull Request Review")
+      );
+    });
+
+    if (hasSummary) {
+      return true;
+    }
+
+    if (response.data.length < 100) {
+      return false;
+    }
+
+    page += 1;
+  }
 }
 
 async function createReviewComment(
@@ -569,11 +624,21 @@ async function main() {
   });
 
   const comments = await analyzeCode(filteredDiff, prDetails);
-  const summaryPrompt = createSummaryPrompt(filteredDiff, prDetails);
-  const summary = await getAISummary(summaryPrompt);
-  const fixPromptSection = INCLUDE_FIX_PROMPT
-    ? createFixPromptSection(comments, prDetails)
+  const shouldIncludeSummary = SUMMARY_ONCE
+    ? !(await hasExistingSummaryReview(
+        prDetails.owner,
+        prDetails.repo,
+        prDetails.pull_number
+      ))
+    : true;
+
+  const summary = shouldIncludeSummary
+    ? await getAISummary(createSummaryPrompt(filteredDiff, prDetails))
     : null;
+  const fixPromptSection =
+    shouldIncludeSummary && INCLUDE_FIX_PROMPT
+      ? createFixPromptSection(comments, prDetails)
+      : null;
   const reviewBody = buildReviewBody(summary, fixPromptSection);
 
   await createReviewComment(
