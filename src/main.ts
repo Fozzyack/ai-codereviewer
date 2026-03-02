@@ -81,7 +81,7 @@ async function analyzeCode(
       const prompt = createPrompt(file, chunk, prDetails);
       const aiResponse = await getAIResponse(prompt);
       if (aiResponse) {
-        const newComments = createComment(file, aiResponse);
+        const newComments = createComment(file, chunk, aiResponse);
         if (newComments) {
           comments.push(...newComments);
         }
@@ -89,6 +89,19 @@ async function analyzeCode(
     }
   }
   return comments;
+}
+
+function getCommentableLines(chunk: Chunk): Set<number> {
+  const lines = new Set<number>();
+  for (const change of chunk.changes) {
+    if (change.type === "del") continue;
+    // @ts-expect-error - ln2 exists on non-deleted changes
+    if (typeof change.ln2 === "number") {
+      // @ts-expect-error - ln2 exists on non-deleted changes
+      lines.add(change.ln2);
+    }
+  }
+  return lines;
 }
 
 function createSummaryPrompt(parsedDiff: File[], prDetails: PRDetails): string {
@@ -130,6 +143,10 @@ ${summarizedDiff}
 }
 
 function createPrompt(file: File, chunk: Chunk, prDetails: PRDetails): string {
+  const commentableLines = Array.from(getCommentableLines(chunk)).sort(
+    (a, b) => a - b
+  );
+
   return `Your task is to review pull requests. Instructions:
 - Provide the response in following JSON format:  {"reviews": [{"lineNumber":  <line_number>, "reviewComment": "<review comment>"}]}
 - Do not give positive comments or compliments.
@@ -137,6 +154,7 @@ function createPrompt(file: File, chunk: Chunk, prDetails: PRDetails): string {
 - Write the comment in GitHub Markdown format.
 - Use the given description only for the overall context and only comment the code.
 - IMPORTANT: NEVER suggest adding comments to the code.
+- Only use line numbers that are in this list: [${commentableLines.join(", ")}]
 
 Review the following code diff in the file "${
     file.to
@@ -253,15 +271,21 @@ async function getAISummary(prompt: string): Promise<string | null> {
 
 function createComment(
   file: File,
+  chunk: Chunk,
   aiResponses: AIReview[]
 ): Array<{ body: string; path: string; line: number }> {
+  const validLines = getCommentableLines(chunk);
+
   return aiResponses.flatMap((aiResponse) => {
     if (!file.to) {
       return [];
     }
+    if (!validLines.has(aiResponse.lineNumber)) {
+      return [];
+    }
     return {
       body: aiResponse.reviewComment,
-      path: file.to,
+      path: file.to.replace(/^b\//, ""),
       line: Number(aiResponse.lineNumber),
     };
   });
@@ -301,7 +325,25 @@ async function createReviewComment(
     return;
   }
 
-  await octokit.pulls.createReview(reviewPayload);
+  try {
+    await octokit.pulls.createReview(reviewPayload);
+  } catch (error: unknown) {
+    const status = (error as { status?: number }).status;
+    if (status === 422 && reviewPayload.body) {
+      core.warning(
+        "Some inline comments could not be resolved. Retrying with summary only."
+      );
+      await octokit.pulls.createReview({
+        owner,
+        repo,
+        pull_number,
+        event: "COMMENT",
+        body: reviewPayload.body,
+      });
+      return;
+    }
+    throw error;
+  }
 }
 
 async function main() {

@@ -102,7 +102,7 @@ function analyzeCode(parsedDiff, prDetails) {
                 const prompt = createPrompt(file, chunk, prDetails);
                 const aiResponse = yield getAIResponse(prompt);
                 if (aiResponse) {
-                    const newComments = createComment(file, aiResponse);
+                    const newComments = createComment(file, chunk, aiResponse);
                     if (newComments) {
                         comments.push(...newComments);
                     }
@@ -111,6 +111,19 @@ function analyzeCode(parsedDiff, prDetails) {
         }
         return comments;
     });
+}
+function getCommentableLines(chunk) {
+    const lines = new Set();
+    for (const change of chunk.changes) {
+        if (change.type === "del")
+            continue;
+        // @ts-expect-error - ln2 exists on non-deleted changes
+        if (typeof change.ln2 === "number") {
+            // @ts-expect-error - ln2 exists on non-deleted changes
+            lines.add(change.ln2);
+        }
+    }
+    return lines;
 }
 function createSummaryPrompt(parsedDiff, prDetails) {
     const MAX_DIFF_CHARS = 12000;
@@ -147,6 +160,7 @@ ${summarizedDiff}
 \`\`\``;
 }
 function createPrompt(file, chunk, prDetails) {
+    const commentableLines = Array.from(getCommentableLines(chunk)).sort((a, b) => a - b);
     return `Your task is to review pull requests. Instructions:
 - Provide the response in following JSON format:  {"reviews": [{"lineNumber":  <line_number>, "reviewComment": "<review comment>"}]}
 - Do not give positive comments or compliments.
@@ -154,6 +168,7 @@ function createPrompt(file, chunk, prDetails) {
 - Write the comment in GitHub Markdown format.
 - Use the given description only for the overall context and only comment the code.
 - IMPORTANT: NEVER suggest adding comments to the code.
+- Only use line numbers that are in this list: [${commentableLines.join(", ")}]
 
 Review the following code diff in the file "${file.to}" and take the pull request title and description into account when writing the response.
   
@@ -252,14 +267,18 @@ function getAISummary(prompt) {
         }
     });
 }
-function createComment(file, aiResponses) {
+function createComment(file, chunk, aiResponses) {
+    const validLines = getCommentableLines(chunk);
     return aiResponses.flatMap((aiResponse) => {
         if (!file.to) {
             return [];
         }
+        if (!validLines.has(aiResponse.lineNumber)) {
+            return [];
+        }
         return {
             body: aiResponse.reviewComment,
-            path: file.to,
+            path: file.to.replace(/^b\//, ""),
             line: Number(aiResponse.lineNumber),
         };
     });
@@ -282,7 +301,24 @@ function createReviewComment(owner, repo, pull_number, comments, summaryBody) {
             core.info("No summary or inline comments to post.");
             return;
         }
-        yield octokit.pulls.createReview(reviewPayload);
+        try {
+            yield octokit.pulls.createReview(reviewPayload);
+        }
+        catch (error) {
+            const status = error.status;
+            if (status === 422 && reviewPayload.body) {
+                core.warning("Some inline comments could not be resolved. Retrying with summary only.");
+                yield octokit.pulls.createReview({
+                    owner,
+                    repo,
+                    pull_number,
+                    event: "COMMENT",
+                    body: reviewPayload.body,
+                });
+                return;
+            }
+            throw error;
+        }
     });
 }
 function main() {
