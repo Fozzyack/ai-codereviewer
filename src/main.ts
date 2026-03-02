@@ -8,6 +8,12 @@ import minimatch from "minimatch";
 const GITHUB_TOKEN: string = core.getInput("GITHUB_TOKEN");
 const OPENAI_API_KEY: string = core.getInput("OPENAI_API_KEY");
 const OPENAI_API_MODEL: string = core.getInput("OPENAI_API_MODEL");
+const INCLUDE_FIX_PROMPT: boolean =
+  core.getInput("include_fix_prompt").toLowerCase() !== "false";
+const FIX_PROMPT_MAX_ITEMS: number = Math.max(
+  1,
+  Number.parseInt(core.getInput("fix_prompt_max_items") || "20", 10) || 20
+);
 
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
 
@@ -26,6 +32,12 @@ interface PRDetails {
 interface AIReview {
   lineNumber: number;
   reviewComment: string;
+}
+
+interface ReviewComment {
+  body: string;
+  path: string;
+  line: number;
 }
 
 function getRequiredEventPath(): string {
@@ -72,8 +84,8 @@ async function getDiff(
 async function analyzeCode(
   parsedDiff: File[],
   prDetails: PRDetails
-): Promise<Array<{ body: string; path: string; line: number }>> {
-  const comments: Array<{ body: string; path: string; line: number }> = [];
+): Promise<ReviewComment[]> {
+  const comments: ReviewComment[] = [];
 
   for (const file of parsedDiff) {
     if (file.to === "/dev/null") continue; // Ignore deleted files
@@ -273,7 +285,7 @@ function createComment(
   file: File,
   chunk: Chunk,
   aiResponses: AIReview[]
-): Array<{ body: string; path: string; line: number }> {
+): ReviewComment[] {
   const validLines = getCommentableLines(chunk);
 
   return aiResponses.flatMap((aiResponse) => {
@@ -291,11 +303,101 @@ function createComment(
   });
 }
 
+function normalizeIssueText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function getUniqueIssues(comments: ReviewComment[]): ReviewComment[] {
+  const seen = new Set<string>();
+  const issues: ReviewComment[] = [];
+
+  for (const comment of comments) {
+    const normalizedBody = normalizeIssueText(comment.body).toLowerCase();
+    const issueKey = `${comment.path}:${comment.line}:${normalizedBody}`;
+    if (seen.has(issueKey)) {
+      continue;
+    }
+    seen.add(issueKey);
+    issues.push({
+      ...comment,
+      body: normalizeIssueText(comment.body),
+    });
+  }
+
+  return issues;
+}
+
+function createFixPromptSection(
+  comments: ReviewComment[],
+  prDetails: PRDetails
+): string | null {
+  const uniqueIssues = getUniqueIssues(comments).slice(0, FIX_PROMPT_MAX_ITEMS);
+
+  if (uniqueIssues.length === 0) {
+    return null;
+  }
+
+  const issueList = uniqueIssues
+    .map((issue, index) => {
+      const truncatedBody =
+        issue.body.length > 400
+          ? `${issue.body.slice(0, 397).trimEnd()}...`
+          : issue.body;
+      return `${index + 1}. ${issue.path}:${issue.line} - ${truncatedBody}`;
+    })
+    .join("\n");
+
+  const prDescription =
+    prDetails.description.trim() || "(no description provided)";
+  const fixPrompt = `You are an AI coding agent. Fix the issues listed below for this pull request.
+
+Pull request title: ${prDetails.title}
+Pull request description:
+${prDescription}
+
+Issues to fix:
+${issueList}
+
+Constraints:
+- Make the smallest safe set of changes needed to resolve the issues.
+- Preserve existing behavior unless an issue explicitly requires a behavior change.
+- Update or add tests when needed to cover the fix.
+- Run project checks (lint/build/tests) and ensure they pass.
+
+Return:
+- A short summary of what you changed.
+- The list of files modified.
+- Any follow-up work that remains.`;
+
+  return `## Fix Prompt
+
+Use this prompt with your coding agent to address the detected issues:
+
+\`\`\`text
+${fixPrompt}
+\`\`\``;
+}
+
+function buildReviewBody(
+  summary: string | null,
+  fixPromptSection: string | null
+) {
+  const sections = [summary, fixPromptSection]
+    .filter((section): section is string => Boolean(section && section.trim()))
+    .map((section) => section.trim());
+
+  if (sections.length === 0) {
+    return undefined;
+  }
+
+  return sections.join("\n\n");
+}
+
 async function createReviewComment(
   owner: string,
   repo: string,
   pull_number: number,
-  comments: Array<{ body: string; path: string; line: number }>,
+  comments: ReviewComment[],
   summaryBody?: string
 ): Promise<void> {
   const reviewPayload: {
@@ -398,13 +500,17 @@ async function main() {
   const comments = await analyzeCode(filteredDiff, prDetails);
   const summaryPrompt = createSummaryPrompt(filteredDiff, prDetails);
   const summary = await getAISummary(summaryPrompt);
+  const fixPromptSection = INCLUDE_FIX_PROMPT
+    ? createFixPromptSection(comments, prDetails)
+    : null;
+  const reviewBody = buildReviewBody(summary, fixPromptSection);
 
   await createReviewComment(
     prDetails.owner,
     prDetails.repo,
     prDetails.pull_number,
     comments,
-    summary || undefined
+    reviewBody
   );
 }
 

@@ -51,6 +51,8 @@ const minimatch_1 = __importDefault(__nccwpck_require__(2002));
 const GITHUB_TOKEN = core.getInput("GITHUB_TOKEN");
 const OPENAI_API_KEY = core.getInput("OPENAI_API_KEY");
 const OPENAI_API_MODEL = core.getInput("OPENAI_API_MODEL");
+const INCLUDE_FIX_PROMPT = core.getInput("include_fix_prompt").toLowerCase() !== "false";
+const FIX_PROMPT_MAX_ITEMS = Math.max(1, Number.parseInt(core.getInput("fix_prompt_max_items") || "20", 10) || 20);
 const octokit = new rest_1.Octokit({ auth: GITHUB_TOKEN });
 const openai = new openai_1.default({
     apiKey: OPENAI_API_KEY,
@@ -283,6 +285,73 @@ function createComment(file, chunk, aiResponses) {
         };
     });
 }
+function normalizeIssueText(text) {
+    return text.replace(/\s+/g, " ").trim();
+}
+function getUniqueIssues(comments) {
+    const seen = new Set();
+    const issues = [];
+    for (const comment of comments) {
+        const normalizedBody = normalizeIssueText(comment.body).toLowerCase();
+        const issueKey = `${comment.path}:${comment.line}:${normalizedBody}`;
+        if (seen.has(issueKey)) {
+            continue;
+        }
+        seen.add(issueKey);
+        issues.push(Object.assign(Object.assign({}, comment), { body: normalizeIssueText(comment.body) }));
+    }
+    return issues;
+}
+function createFixPromptSection(comments, prDetails) {
+    const uniqueIssues = getUniqueIssues(comments).slice(0, FIX_PROMPT_MAX_ITEMS);
+    if (uniqueIssues.length === 0) {
+        return null;
+    }
+    const issueList = uniqueIssues
+        .map((issue, index) => {
+        const truncatedBody = issue.body.length > 400
+            ? `${issue.body.slice(0, 397).trimEnd()}...`
+            : issue.body;
+        return `${index + 1}. ${issue.path}:${issue.line} - ${truncatedBody}`;
+    })
+        .join("\n");
+    const prDescription = prDetails.description.trim() || "(no description provided)";
+    const fixPrompt = `You are an AI coding agent. Fix the issues listed below for this pull request.
+
+Pull request title: ${prDetails.title}
+Pull request description:
+${prDescription}
+
+Issues to fix:
+${issueList}
+
+Constraints:
+- Make the smallest safe set of changes needed to resolve the issues.
+- Preserve existing behavior unless an issue explicitly requires a behavior change.
+- Update or add tests when needed to cover the fix.
+- Run project checks (lint/build/tests) and ensure they pass.
+
+Return:
+- A short summary of what you changed.
+- The list of files modified.
+- Any follow-up work that remains.`;
+    return `## Fix Prompt
+
+Use this prompt with your coding agent to address the detected issues:
+
+\`\`\`text
+${fixPrompt}
+\`\`\``;
+}
+function buildReviewBody(summary, fixPromptSection) {
+    const sections = [summary, fixPromptSection]
+        .filter((section) => Boolean(section && section.trim()))
+        .map((section) => section.trim());
+    if (sections.length === 0) {
+        return undefined;
+    }
+    return sections.join("\n\n");
+}
 function createReviewComment(owner, repo, pull_number, comments, summaryBody) {
     return __awaiter(this, void 0, void 0, function* () {
         const reviewPayload = {
@@ -362,7 +431,11 @@ function main() {
         const comments = yield analyzeCode(filteredDiff, prDetails);
         const summaryPrompt = createSummaryPrompt(filteredDiff, prDetails);
         const summary = yield getAISummary(summaryPrompt);
-        yield createReviewComment(prDetails.owner, prDetails.repo, prDetails.pull_number, comments, summary || undefined);
+        const fixPromptSection = INCLUDE_FIX_PROMPT
+            ? createFixPromptSection(comments, prDetails)
+            : null;
+        const reviewBody = buildReviewBody(summary, fixPromptSection);
+        yield createReviewComment(prDetails.owner, prDetails.repo, prDetails.pull_number, comments, reviewBody);
     });
 }
 main().catch((error) => {
