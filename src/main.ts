@@ -24,13 +24,21 @@ interface PRDetails {
 }
 
 interface AIReview {
-  lineNumber: string;
+  lineNumber: number;
   reviewComment: string;
+}
+
+function getRequiredEventPath(): string {
+  const eventPath = process.env.GITHUB_EVENT_PATH;
+  if (!eventPath) {
+    throw new Error("GITHUB_EVENT_PATH is not set");
+  }
+  return eventPath;
 }
 
 async function getPRDetails(): Promise<PRDetails> {
   const { repository, number } = JSON.parse(
-    readFileSync(process.env.GITHUB_EVENT_PATH || "", "utf8"),
+    readFileSync(getRequiredEventPath(), "utf8")
   );
   const prResponse = await octokit.pulls.get({
     owner: repository.owner.login,
@@ -49,7 +57,7 @@ async function getPRDetails(): Promise<PRDetails> {
 async function getDiff(
   owner: string,
   repo: string,
-  pull_number: number,
+  pull_number: number
 ): Promise<string | null> {
   const response = await octokit.pulls.get({
     owner,
@@ -63,7 +71,7 @@ async function getDiff(
 
 async function analyzeCode(
   parsedDiff: File[],
-  prDetails: PRDetails,
+  prDetails: PRDetails
 ): Promise<Array<{ body: string; path: string; line: number }>> {
   const comments: Array<{ body: string; path: string; line: number }> = [];
 
@@ -73,7 +81,7 @@ async function analyzeCode(
       const prompt = createPrompt(file, chunk, prDetails);
       const aiResponse = await getAIResponse(prompt);
       if (aiResponse) {
-        const newComments = createComment(file, chunk, aiResponse);
+        const newComments = createComment(file, aiResponse);
         if (newComments) {
           comments.push(...newComments);
         }
@@ -85,7 +93,6 @@ async function analyzeCode(
 
 function createSummaryPrompt(parsedDiff: File[], prDetails: PRDetails): string {
   const MAX_DIFF_CHARS = 12000;
-  let usedChars = 0;
 
   const summarizedDiff = parsedDiff
     .map((file) => {
@@ -98,7 +105,7 @@ function createSummaryPrompt(parsedDiff: File[], prDetails: PRDetails): string {
     .join("\n\n")
     .slice(0, MAX_DIFF_CHARS);
 
-  usedChars = summarizedDiff.length;
+  const usedChars = summarizedDiff.length;
 
   return `You are reviewing a pull request. Provide a concise GitHub Markdown summary.
 
@@ -155,7 +162,7 @@ ${chunk.changes
 }
 
 async function getAIResponse(prompt: string): Promise<Array<{
-  lineNumber: string;
+  lineNumber: number;
   reviewComment: string;
 }> | null> {
   const queryConfig = {
@@ -182,8 +189,33 @@ async function getAIResponse(prompt: string): Promise<Array<{
       ],
     });
 
-    const res = response.choices[0].message?.content?.trim() || "{}";
-    return JSON.parse(res).reviews;
+    const res = response.choices[0]?.message?.content?.trim() || "{}";
+    const parsed = JSON.parse(res);
+    const rawReviews: unknown[] = Array.isArray(parsed.reviews)
+      ? parsed.reviews
+      : [];
+
+    return rawReviews
+      .map((review: unknown) => {
+        const typedReview = review as Partial<AIReview>;
+        const lineNumber = Number(typedReview.lineNumber);
+        const reviewComment =
+          typeof typedReview.reviewComment === "string"
+            ? typedReview.reviewComment
+            : "";
+        if (
+          !Number.isFinite(lineNumber) ||
+          lineNumber <= 0 ||
+          !reviewComment.trim()
+        ) {
+          return null;
+        }
+        return {
+          lineNumber,
+          reviewComment,
+        };
+      })
+      .filter((review): review is AIReview => review !== null);
   } catch (error) {
     console.error("Error:", error);
     return null;
@@ -211,7 +243,7 @@ async function getAISummary(prompt: string): Promise<string | null> {
       ],
     });
 
-    const summary = response.choices[0].message?.content?.trim();
+    const summary = response.choices[0]?.message?.content?.trim();
     return summary || null;
   } catch (error) {
     console.error("Error:", error);
@@ -221,8 +253,7 @@ async function getAISummary(prompt: string): Promise<string | null> {
 
 function createComment(
   file: File,
-  chunk: Chunk,
-  aiResponses: AIReview[],
+  aiResponses: AIReview[]
 ): Array<{ body: string; path: string; line: number }> {
   return aiResponses.flatMap((aiResponse) => {
     if (!file.to) {
@@ -241,7 +272,7 @@ async function createReviewComment(
   repo: string,
   pull_number: number,
   comments: Array<{ body: string; path: string; line: number }>,
-  summaryBody?: string,
+  summaryBody?: string
 ): Promise<void> {
   const reviewPayload: {
     owner: string;
@@ -266,6 +297,7 @@ async function createReviewComment(
   }
 
   if (!reviewPayload.comments && !reviewPayload.body) {
+    core.info("No summary or inline comments to post.");
     return;
   }
 
@@ -275,15 +307,13 @@ async function createReviewComment(
 async function main() {
   const prDetails = await getPRDetails();
   let diff: string | null;
-  const eventData = JSON.parse(
-    readFileSync(process.env.GITHUB_EVENT_PATH ?? "", "utf8"),
-  );
+  const eventData = JSON.parse(readFileSync(getRequiredEventPath(), "utf8"));
 
   if (eventData.action === "opened") {
     diff = await getDiff(
       prDetails.owner,
       prDetails.repo,
-      prDetails.pull_number,
+      prDetails.pull_number
     );
   } else if (eventData.action === "synchronize") {
     const newBaseSha = eventData.before;
@@ -319,7 +349,7 @@ async function main() {
 
   const filteredDiff = parsedDiff.filter((file) => {
     return !excludePatterns.some((pattern) =>
-      minimatch(file.to ?? "", pattern),
+      minimatch(file.to ?? "", pattern)
     );
   });
 
@@ -332,7 +362,7 @@ async function main() {
     prDetails.repo,
     prDetails.pull_number,
     comments,
-    summary ?? undefined,
+    summary || undefined
   );
 }
 

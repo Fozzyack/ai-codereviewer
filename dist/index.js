@@ -55,10 +55,17 @@ const octokit = new rest_1.Octokit({ auth: GITHUB_TOKEN });
 const openai = new openai_1.default({
     apiKey: OPENAI_API_KEY,
 });
+function getRequiredEventPath() {
+    const eventPath = process.env.GITHUB_EVENT_PATH;
+    if (!eventPath) {
+        throw new Error("GITHUB_EVENT_PATH is not set");
+    }
+    return eventPath;
+}
 function getPRDetails() {
     var _a, _b;
     return __awaiter(this, void 0, void 0, function* () {
-        const { repository, number } = JSON.parse((0, fs_1.readFileSync)(process.env.GITHUB_EVENT_PATH || "", "utf8"));
+        const { repository, number } = JSON.parse((0, fs_1.readFileSync)(getRequiredEventPath(), "utf8"));
         const prResponse = yield octokit.pulls.get({
             owner: repository.owner.login,
             repo: repository.name,
@@ -95,7 +102,7 @@ function analyzeCode(parsedDiff, prDetails) {
                 const prompt = createPrompt(file, chunk, prDetails);
                 const aiResponse = yield getAIResponse(prompt);
                 if (aiResponse) {
-                    const newComments = createComment(file, chunk, aiResponse);
+                    const newComments = createComment(file, aiResponse);
                     if (newComments) {
                         comments.push(...newComments);
                     }
@@ -107,7 +114,6 @@ function analyzeCode(parsedDiff, prDetails) {
 }
 function createSummaryPrompt(parsedDiff, prDetails) {
     const MAX_DIFF_CHARS = 12000;
-    let usedChars = 0;
     const summarizedDiff = parsedDiff
         .map((file) => {
         const chunkPreview = file.chunks
@@ -118,7 +124,7 @@ function createSummaryPrompt(parsedDiff, prDetails) {
     })
         .join("\n\n")
         .slice(0, MAX_DIFF_CHARS);
-    usedChars = summarizedDiff.length;
+    const usedChars = summarizedDiff.length;
     return `You are reviewing a pull request. Provide a concise GitHub Markdown summary.
 
 Instructions:
@@ -170,7 +176,7 @@ ${chunk.changes
 `;
 }
 function getAIResponse(prompt) {
-    var _a, _b;
+    var _a, _b, _c;
     return __awaiter(this, void 0, void 0, function* () {
         const queryConfig = {
             model: OPENAI_API_MODEL,
@@ -189,8 +195,29 @@ function getAIResponse(prompt) {
                         content: prompt,
                     },
                 ] }));
-            const res = ((_b = (_a = response.choices[0].message) === null || _a === void 0 ? void 0 : _a.content) === null || _b === void 0 ? void 0 : _b.trim()) || "{}";
-            return JSON.parse(res).reviews;
+            const res = ((_c = (_b = (_a = response.choices[0]) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.content) === null || _c === void 0 ? void 0 : _c.trim()) || "{}";
+            const parsed = JSON.parse(res);
+            const rawReviews = Array.isArray(parsed.reviews)
+                ? parsed.reviews
+                : [];
+            return rawReviews
+                .map((review) => {
+                const typedReview = review;
+                const lineNumber = Number(typedReview.lineNumber);
+                const reviewComment = typeof typedReview.reviewComment === "string"
+                    ? typedReview.reviewComment
+                    : "";
+                if (!Number.isFinite(lineNumber) ||
+                    lineNumber <= 0 ||
+                    !reviewComment.trim()) {
+                    return null;
+                }
+                return {
+                    lineNumber,
+                    reviewComment,
+                };
+            })
+                .filter((review) => review !== null);
         }
         catch (error) {
             console.error("Error:", error);
@@ -199,7 +226,7 @@ function getAIResponse(prompt) {
     });
 }
 function getAISummary(prompt) {
-    var _a, _b;
+    var _a, _b, _c;
     return __awaiter(this, void 0, void 0, function* () {
         const queryConfig = {
             model: OPENAI_API_MODEL,
@@ -216,7 +243,7 @@ function getAISummary(prompt) {
                         content: prompt,
                     },
                 ] }));
-            const summary = (_b = (_a = response.choices[0].message) === null || _a === void 0 ? void 0 : _a.content) === null || _b === void 0 ? void 0 : _b.trim();
+            const summary = (_c = (_b = (_a = response.choices[0]) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.content) === null || _c === void 0 ? void 0 : _c.trim();
             return summary || null;
         }
         catch (error) {
@@ -225,7 +252,7 @@ function getAISummary(prompt) {
         }
     });
 }
-function createComment(file, chunk, aiResponses) {
+function createComment(file, aiResponses) {
     return aiResponses.flatMap((aiResponse) => {
         if (!file.to) {
             return [];
@@ -252,17 +279,17 @@ function createReviewComment(owner, repo, pull_number, comments, summaryBody) {
             reviewPayload.body = summaryBody;
         }
         if (!reviewPayload.comments && !reviewPayload.body) {
+            core.info("No summary or inline comments to post.");
             return;
         }
         yield octokit.pulls.createReview(reviewPayload);
     });
 }
 function main() {
-    var _a;
     return __awaiter(this, void 0, void 0, function* () {
         const prDetails = yield getPRDetails();
         let diff;
-        const eventData = JSON.parse((0, fs_1.readFileSync)((_a = process.env.GITHUB_EVENT_PATH) !== null && _a !== void 0 ? _a : "", "utf8"));
+        const eventData = JSON.parse((0, fs_1.readFileSync)(getRequiredEventPath(), "utf8"));
         if (eventData.action === "opened") {
             diff = yield getDiff(prDetails.owner, prDetails.repo, prDetails.pull_number);
         }
@@ -299,7 +326,7 @@ function main() {
         const comments = yield analyzeCode(filteredDiff, prDetails);
         const summaryPrompt = createSummaryPrompt(filteredDiff, prDetails);
         const summary = yield getAISummary(summaryPrompt);
-        yield createReviewComment(prDetails.owner, prDetails.repo, prDetails.pull_number, comments, summary !== null && summary !== void 0 ? summary : undefined);
+        yield createReviewComment(prDetails.owner, prDetails.repo, prDetails.pull_number, comments, summary || undefined);
     });
 }
 main().catch((error) => {
