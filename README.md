@@ -97,10 +97,7 @@ per pull request, while inline comments continue on later updates.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit issues or pull requests to improve the AI Code Reviewer GitHub
-Action.
-
-Let the maintainer generate the final package (`yarn build` & `yarn package`).
+If you want to contribute you'll be met with an AI code review for your PR. I may have a look but no promises :).
 
 ## License
 
