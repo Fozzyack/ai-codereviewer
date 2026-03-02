@@ -35,10 +35,13 @@ const OPENAI_API_KEY: string = getRequiredInput("OPENAI_API_KEY");
 const OPENAI_API_MODEL: string = getOptionalInput("OPENAI_API_MODEL", "gpt-4");
 const INCLUDE_FIX_PROMPT: boolean =
   core.getInput("include_fix_prompt").trim().toLowerCase() !== "false";
+const SUMMARY_ONCE: boolean =
+  core.getInput("summary_once").trim().toLowerCase() !== "false";
 const FIX_PROMPT_MAX_ITEMS: number = getPositiveIntInput(
   "fix_prompt_max_items",
   20
 );
+const SUMMARY_MARKER = "<!-- ai-code-reviewer-summary -->";
 
 if (!MODEL_ID_PATTERN.test(OPENAI_API_MODEL)) {
   throw new Error(
@@ -457,7 +460,44 @@ function buildReviewBody(
     return undefined;
   }
 
-  return sections.join("\n\n");
+  return `${SUMMARY_MARKER}\n${sections.join("\n\n")}`;
+}
+
+async function hasExistingSummaryReview(
+  owner: string,
+  repo: string,
+  pull_number: number
+): Promise<boolean> {
+  let page = 1;
+
+  while (true) {
+    const response = await octokit.pulls.listReviews({
+      owner,
+      repo,
+      pull_number,
+      per_page: 100,
+      page,
+    });
+
+    const hasSummary = response.data.some((review) => {
+      const body = review.body || "";
+      return (
+        body.includes(SUMMARY_MARKER) ||
+        body.includes("## Fix Prompt") ||
+        body.includes("### Summary of Pull Request Review")
+      );
+    });
+
+    if (hasSummary) {
+      return true;
+    }
+
+    if (response.data.length < 100) {
+      return false;
+    }
+
+    page += 1;
+  }
 }
 
 async function createReviewComment(
@@ -569,11 +609,21 @@ async function main() {
   });
 
   const comments = await analyzeCode(filteredDiff, prDetails);
-  const summaryPrompt = createSummaryPrompt(filteredDiff, prDetails);
-  const summary = await getAISummary(summaryPrompt);
-  const fixPromptSection = INCLUDE_FIX_PROMPT
-    ? createFixPromptSection(comments, prDetails)
+  const shouldIncludeSummary = SUMMARY_ONCE
+    ? !(await hasExistingSummaryReview(
+        prDetails.owner,
+        prDetails.repo,
+        prDetails.pull_number
+      ))
+    : true;
+
+  const summary = shouldIncludeSummary
+    ? await getAISummary(createSummaryPrompt(filteredDiff, prDetails))
     : null;
+  const fixPromptSection =
+    shouldIncludeSummary && INCLUDE_FIX_PROMPT
+      ? createFixPromptSection(comments, prDetails)
+      : null;
   const reviewBody = buildReviewBody(summary, fixPromptSection);
 
   await createReviewComment(
