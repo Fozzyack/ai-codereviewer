@@ -8,6 +8,7 @@ review process.
 
 - Reviews pull requests using OpenAI's GPT-4 API.
 - Provides intelligent comments and suggestions for improving your code.
+- Posts an overall pull request review summary in addition to line-by-line comments.
 - Filters out files that match specified exclude patterns.
 - Easy to set up and integrate into your GitHub workflow.
 
@@ -56,7 +57,8 @@ jobs:
 ## How It Works
 
 The AI Code Reviewer GitHub Action retrieves the pull request diff, filters out excluded files, and sends code chunks to
-the OpenAI API. It then generates review comments based on the AI's response and adds them to the pull request.
+the OpenAI API. It generates both an overall pull request summary and inline review comments, then posts them back as a
+GitHub review.
 
 ## Contributing
 

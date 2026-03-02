@@ -105,6 +105,41 @@ function analyzeCode(parsedDiff, prDetails) {
         return comments;
     });
 }
+function createSummaryPrompt(parsedDiff, prDetails) {
+    const MAX_DIFF_CHARS = 12000;
+    let usedChars = 0;
+    const summarizedDiff = parsedDiff
+        .map((file) => {
+        const chunkPreview = file.chunks
+            .slice(0, 3)
+            .map((chunk) => chunk.content)
+            .join("\n");
+        return `File: ${file.to}\n${chunkPreview}`;
+    })
+        .join("\n\n")
+        .slice(0, MAX_DIFF_CHARS);
+    usedChars = summarizedDiff.length;
+    return `You are reviewing a pull request. Provide a concise GitHub Markdown summary.
+
+Instructions:
+- Focus on the overall impact, key risks, and recommended follow-up checks.
+- If there are no major concerns, explicitly say that no critical issues were found.
+- Do not provide compliments or mention writing code comments.
+- Keep it short: 3 to 6 bullet points.
+
+Pull request title: ${prDetails.title}
+Pull request description:
+
+---
+${prDetails.description}
+---
+
+Changed files and diff excerpts (truncated to ${usedChars} chars):
+
+\`\`\`diff
+${summarizedDiff}
+\`\`\``;
+}
 function createPrompt(file, chunk, prDetails) {
     return `Your task is to review pull requests. Instructions:
 - Provide the response in following JSON format:  {"reviews": [{"lineNumber":  <line_number>, "reviewComment": "<review comment>"}]}
@@ -163,6 +198,33 @@ function getAIResponse(prompt) {
         }
     });
 }
+function getAISummary(prompt) {
+    var _a, _b;
+    return __awaiter(this, void 0, void 0, function* () {
+        const queryConfig = {
+            model: OPENAI_API_MODEL,
+            temperature: 0.2,
+            max_tokens: 400,
+            top_p: 1,
+            frequency_penalty: 0,
+            presence_penalty: 0,
+        };
+        try {
+            const response = yield openai.chat.completions.create(Object.assign(Object.assign({}, queryConfig), { messages: [
+                    {
+                        role: "system",
+                        content: prompt,
+                    },
+                ] }));
+            const summary = (_b = (_a = response.choices[0].message) === null || _a === void 0 ? void 0 : _a.content) === null || _b === void 0 ? void 0 : _b.trim();
+            return summary || null;
+        }
+        catch (error) {
+            console.error("Error:", error);
+            return null;
+        }
+    });
+}
 function createComment(file, chunk, aiResponses) {
     return aiResponses.flatMap((aiResponse) => {
         if (!file.to) {
@@ -175,15 +237,24 @@ function createComment(file, chunk, aiResponses) {
         };
     });
 }
-function createReviewComment(owner, repo, pull_number, comments) {
+function createReviewComment(owner, repo, pull_number, comments, summaryBody) {
     return __awaiter(this, void 0, void 0, function* () {
-        yield octokit.pulls.createReview({
+        const reviewPayload = {
             owner,
             repo,
             pull_number,
-            comments,
             event: "COMMENT",
-        });
+        };
+        if (comments.length > 0) {
+            reviewPayload.comments = comments;
+        }
+        if (summaryBody) {
+            reviewPayload.body = summaryBody;
+        }
+        if (!reviewPayload.comments && !reviewPayload.body) {
+            return;
+        }
+        yield octokit.pulls.createReview(reviewPayload);
     });
 }
 function main() {
@@ -226,9 +297,9 @@ function main() {
             return !excludePatterns.some((pattern) => { var _a; return (0, minimatch_1.default)((_a = file.to) !== null && _a !== void 0 ? _a : "", pattern); });
         });
         const comments = yield analyzeCode(filteredDiff, prDetails);
-        if (comments.length > 0) {
-            yield createReviewComment(prDetails.owner, prDetails.repo, prDetails.pull_number, comments);
-        }
+        const summaryPrompt = createSummaryPrompt(filteredDiff, prDetails);
+        const summary = yield getAISummary(summaryPrompt);
+        yield createReviewComment(prDetails.owner, prDetails.repo, prDetails.pull_number, comments, summary !== null && summary !== void 0 ? summary : undefined);
     });
 }
 main().catch((error) => {

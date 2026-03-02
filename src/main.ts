@@ -23,9 +23,14 @@ interface PRDetails {
   description: string;
 }
 
+interface AIReview {
+  lineNumber: string;
+  reviewComment: string;
+}
+
 async function getPRDetails(): Promise<PRDetails> {
   const { repository, number } = JSON.parse(
-    readFileSync(process.env.GITHUB_EVENT_PATH || "", "utf8")
+    readFileSync(process.env.GITHUB_EVENT_PATH || "", "utf8"),
   );
   const prResponse = await octokit.pulls.get({
     owner: repository.owner.login,
@@ -44,7 +49,7 @@ async function getPRDetails(): Promise<PRDetails> {
 async function getDiff(
   owner: string,
   repo: string,
-  pull_number: number
+  pull_number: number,
 ): Promise<string | null> {
   const response = await octokit.pulls.get({
     owner,
@@ -58,7 +63,7 @@ async function getDiff(
 
 async function analyzeCode(
   parsedDiff: File[],
-  prDetails: PRDetails
+  prDetails: PRDetails,
 ): Promise<Array<{ body: string; path: string; line: number }>> {
   const comments: Array<{ body: string; path: string; line: number }> = [];
 
@@ -76,6 +81,45 @@ async function analyzeCode(
     }
   }
   return comments;
+}
+
+function createSummaryPrompt(parsedDiff: File[], prDetails: PRDetails): string {
+  const MAX_DIFF_CHARS = 12000;
+  let usedChars = 0;
+
+  const summarizedDiff = parsedDiff
+    .map((file) => {
+      const chunkPreview = file.chunks
+        .slice(0, 3)
+        .map((chunk) => chunk.content)
+        .join("\n");
+      return `File: ${file.to}\n${chunkPreview}`;
+    })
+    .join("\n\n")
+    .slice(0, MAX_DIFF_CHARS);
+
+  usedChars = summarizedDiff.length;
+
+  return `You are reviewing a pull request. Provide a concise GitHub Markdown summary.
+
+Instructions:
+- Focus on the overall impact, key risks, and recommended follow-up checks.
+- If there are no major concerns, explicitly say that no critical issues were found.
+- Do not provide compliments or mention writing code comments.
+- Keep it short: 3 to 6 bullet points.
+
+Pull request title: ${prDetails.title}
+Pull request description:
+
+---
+${prDetails.description}
+---
+
+Changed files and diff excerpts (truncated to ${usedChars} chars):
+
+\`\`\`diff
+${summarizedDiff}
+\`\`\``;
 }
 
 function createPrompt(file: File, chunk: Chunk, prDetails: PRDetails): string {
@@ -146,13 +190,39 @@ async function getAIResponse(prompt: string): Promise<Array<{
   }
 }
 
+async function getAISummary(prompt: string): Promise<string | null> {
+  const queryConfig = {
+    model: OPENAI_API_MODEL,
+    temperature: 0.2,
+    max_tokens: 400,
+    top_p: 1,
+    frequency_penalty: 0,
+    presence_penalty: 0,
+  };
+
+  try {
+    const response = await openai.chat.completions.create({
+      ...queryConfig,
+      messages: [
+        {
+          role: "system",
+          content: prompt,
+        },
+      ],
+    });
+
+    const summary = response.choices[0].message?.content?.trim();
+    return summary || null;
+  } catch (error) {
+    console.error("Error:", error);
+    return null;
+  }
+}
+
 function createComment(
   file: File,
   chunk: Chunk,
-  aiResponses: Array<{
-    lineNumber: string;
-    reviewComment: string;
-  }>
+  aiResponses: AIReview[],
 ): Array<{ body: string; path: string; line: number }> {
   return aiResponses.flatMap((aiResponse) => {
     if (!file.to) {
@@ -170,29 +240,50 @@ async function createReviewComment(
   owner: string,
   repo: string,
   pull_number: number,
-  comments: Array<{ body: string; path: string; line: number }>
+  comments: Array<{ body: string; path: string; line: number }>,
+  summaryBody?: string,
 ): Promise<void> {
-  await octokit.pulls.createReview({
+  const reviewPayload: {
+    owner: string;
+    repo: string;
+    pull_number: number;
+    event: "COMMENT";
+    comments?: Array<{ body: string; path: string; line: number }>;
+    body?: string;
+  } = {
     owner,
     repo,
     pull_number,
-    comments,
     event: "COMMENT",
-  });
+  };
+
+  if (comments.length > 0) {
+    reviewPayload.comments = comments;
+  }
+
+  if (summaryBody) {
+    reviewPayload.body = summaryBody;
+  }
+
+  if (!reviewPayload.comments && !reviewPayload.body) {
+    return;
+  }
+
+  await octokit.pulls.createReview(reviewPayload);
 }
 
 async function main() {
   const prDetails = await getPRDetails();
   let diff: string | null;
   const eventData = JSON.parse(
-    readFileSync(process.env.GITHUB_EVENT_PATH ?? "", "utf8")
+    readFileSync(process.env.GITHUB_EVENT_PATH ?? "", "utf8"),
   );
 
   if (eventData.action === "opened") {
     diff = await getDiff(
       prDetails.owner,
       prDetails.repo,
-      prDetails.pull_number
+      prDetails.pull_number,
     );
   } else if (eventData.action === "synchronize") {
     const newBaseSha = eventData.before;
@@ -228,19 +319,21 @@ async function main() {
 
   const filteredDiff = parsedDiff.filter((file) => {
     return !excludePatterns.some((pattern) =>
-      minimatch(file.to ?? "", pattern)
+      minimatch(file.to ?? "", pattern),
     );
   });
 
   const comments = await analyzeCode(filteredDiff, prDetails);
-  if (comments.length > 0) {
-    await createReviewComment(
-      prDetails.owner,
-      prDetails.repo,
-      prDetails.pull_number,
-      comments
-    );
-  }
+  const summaryPrompt = createSummaryPrompt(filteredDiff, prDetails);
+  const summary = await getAISummary(summaryPrompt);
+
+  await createReviewComment(
+    prDetails.owner,
+    prDetails.repo,
+    prDetails.pull_number,
+    comments,
+    summary ?? undefined,
+  );
 }
 
 main().catch((error) => {
