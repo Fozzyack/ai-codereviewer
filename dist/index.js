@@ -48,11 +48,34 @@ const openai_1 = __importDefault(__nccwpck_require__(47));
 const rest_1 = __nccwpck_require__(5375);
 const parse_diff_1 = __importDefault(__nccwpck_require__(4833));
 const minimatch_1 = __importDefault(__nccwpck_require__(2002));
-const GITHUB_TOKEN = core.getInput("GITHUB_TOKEN");
-const OPENAI_API_KEY = core.getInput("OPENAI_API_KEY");
-const OPENAI_API_MODEL = core.getInput("OPENAI_API_MODEL");
-const INCLUDE_FIX_PROMPT = core.getInput("include_fix_prompt").toLowerCase() !== "false";
-const FIX_PROMPT_MAX_ITEMS = Math.max(1, Number.parseInt(core.getInput("fix_prompt_max_items") || "20", 10) || 20);
+function getRequiredInput(name) {
+    return core.getInput(name, { required: true }).trim();
+}
+function getOptionalInput(name, fallback) {
+    const input = core.getInput(name).trim();
+    return input || fallback;
+}
+function getPositiveIntInput(name, fallback) {
+    const input = core.getInput(name).trim();
+    if (!input) {
+        return fallback;
+    }
+    const parsed = Number.parseInt(input, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+        core.warning(`${name} must be a positive integer. Falling back to ${fallback}.`);
+        return fallback;
+    }
+    return parsed;
+}
+const MODEL_ID_PATTERN = /^[a-zA-Z0-9._:-]+$/;
+const GITHUB_TOKEN = getRequiredInput("GITHUB_TOKEN");
+const OPENAI_API_KEY = getRequiredInput("OPENAI_API_KEY");
+const OPENAI_API_MODEL = getOptionalInput("OPENAI_API_MODEL", "gpt-4");
+const INCLUDE_FIX_PROMPT = core.getInput("include_fix_prompt").trim().toLowerCase() !== "false";
+const FIX_PROMPT_MAX_ITEMS = getPositiveIntInput("fix_prompt_max_items", 20);
+if (!MODEL_ID_PATTERN.test(OPENAI_API_MODEL)) {
+    throw new Error("OPENAI_API_MODEL contains invalid characters. Use letters, numbers, '.', '_', '-', or ':'.");
+}
 const octokit = new rest_1.Octokit({ auth: GITHUB_TOKEN });
 const openai = new openai_1.default({
     apiKey: OPENAI_API_KEY,
@@ -64,10 +87,22 @@ function getRequiredEventPath() {
     }
     return eventPath;
 }
-function getPRDetails() {
+function getEventData() {
+    var _a, _b, _c;
+    const eventRaw = (0, fs_1.readFileSync)(getRequiredEventPath(), "utf8");
+    const eventData = JSON.parse(eventRaw);
+    if (!((_b = (_a = eventData.repository) === null || _a === void 0 ? void 0 : _a.owner) === null || _b === void 0 ? void 0 : _b.login) ||
+        !((_c = eventData.repository) === null || _c === void 0 ? void 0 : _c.name) ||
+        typeof eventData.number !== "number" ||
+        !eventData.action) {
+        throw new Error("GitHub event payload is missing required pull request fields");
+    }
+    return eventData;
+}
+function getPRDetails(eventData) {
     var _a, _b;
     return __awaiter(this, void 0, void 0, function* () {
-        const { repository, number } = JSON.parse((0, fs_1.readFileSync)(getRequiredEventPath(), "utf8"));
+        const { repository, number } = eventData;
         const prResponse = yield octokit.pulls.get({
             owner: repository.owner.login,
             repo: repository.name,
@@ -288,6 +323,9 @@ function createComment(file, chunk, aiResponses) {
 function normalizeIssueText(text) {
     return text.replace(/\s+/g, " ").trim();
 }
+function sanitizeForCodeBlock(text) {
+    return text.replace(/```/g, "'''");
+}
 function getUniqueIssues(comments) {
     const seen = new Set();
     const issues = [];
@@ -312,13 +350,14 @@ function createFixPromptSection(comments, prDetails) {
         const truncatedBody = issue.body.length > 400
             ? `${issue.body.slice(0, 397).trimEnd()}...`
             : issue.body;
-        return `${index + 1}. ${issue.path}:${issue.line} - ${truncatedBody}`;
+        return `${index + 1}. ${issue.path}:${issue.line} - ${sanitizeForCodeBlock(truncatedBody)}`;
     })
         .join("\n");
-    const prDescription = prDetails.description.trim() || "(no description provided)";
+    const prDescription = sanitizeForCodeBlock(prDetails.description.trim()) ||
+        "(no description provided)";
     const fixPrompt = `You are an AI coding agent. Fix the issues listed below for this pull request.
 
-Pull request title: ${prDetails.title}
+Pull request title: ${sanitizeForCodeBlock(prDetails.title)}
 Pull request description:
 ${prDescription}
 
@@ -392,15 +431,18 @@ function createReviewComment(owner, repo, pull_number, comments, summaryBody) {
 }
 function main() {
     return __awaiter(this, void 0, void 0, function* () {
-        const prDetails = yield getPRDetails();
+        const eventData = getEventData();
+        const prDetails = yield getPRDetails(eventData);
         let diff;
-        const eventData = JSON.parse((0, fs_1.readFileSync)(getRequiredEventPath(), "utf8"));
         if (eventData.action === "opened") {
             diff = yield getDiff(prDetails.owner, prDetails.repo, prDetails.pull_number);
         }
         else if (eventData.action === "synchronize") {
             const newBaseSha = eventData.before;
             const newHeadSha = eventData.after;
+            if (!newBaseSha || !newHeadSha) {
+                throw new Error("Missing before/after SHAs for synchronize event");
+            }
             const response = yield octokit.repos.compareCommits({
                 headers: {
                     accept: "application/vnd.github.v3.diff",
