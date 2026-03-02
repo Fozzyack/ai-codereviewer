@@ -15,6 +15,18 @@ inputs:
     description: "Glob patterns to exclude files from the diff analysis"
     required: false
     default: ""
+  include_fix_prompt:
+    description: "Include a deterministic fix prompt in the review summary"
+    required: false
+    default: "true"
+  summary_once:
+    description: "Post the overall summary/fix prompt only once per pull request"
+    required: false
+    default: "true"
+  fix_prompt_max_items:
+    description: "Maximum number of unique issues in the fix prompt (1-200)"
+    required: false
+    default: "20"
 runs:
   using: "node16"
   main: "dist/index.js"

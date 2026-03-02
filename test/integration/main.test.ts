@@ -63,6 +63,7 @@ const mockState = vi.hoisted(() => {
     warning: vi.fn(),
     pullsGet: vi.fn(),
     createReview: vi.fn(),
+    listReviews: vi.fn(),
     compareCommits: vi.fn(),
     createCompletion: vi.fn(),
     readFileSync: vi.fn(),
@@ -80,6 +81,7 @@ vi.mock("@octokit/rest", () => ({
     pulls = {
       get: mockState.pullsGet,
       createReview: mockState.createReview,
+      listReviews: mockState.listReviews,
     };
 
     repos = {
@@ -164,6 +166,7 @@ describe("main action flow", () => {
     );
 
     mockState.compareCommits.mockResolvedValue({ data: mockState.diffPayload });
+    mockState.listReviews.mockResolvedValue({ data: [] });
 
     mockState.createCompletion.mockImplementation(
       async (params: { messages: Array<{ content: string }> }) => {

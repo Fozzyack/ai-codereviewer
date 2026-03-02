@@ -48,9 +48,44 @@ const openai_1 = __importDefault(__nccwpck_require__(47));
 const rest_1 = __nccwpck_require__(5375);
 const parse_diff_1 = __importDefault(__nccwpck_require__(4833));
 const minimatch_1 = __importDefault(__nccwpck_require__(2002));
-const GITHUB_TOKEN = core.getInput("GITHUB_TOKEN");
-const OPENAI_API_KEY = core.getInput("OPENAI_API_KEY");
-const OPENAI_API_MODEL = core.getInput("OPENAI_API_MODEL");
+function getRequiredInput(name) {
+    return core.getInput(name, { required: true }).trim();
+}
+function getOptionalInput(name, fallback) {
+    const input = core.getInput(name).trim();
+    return input || fallback;
+}
+function getBoundedIntInput(name, fallback, min, max) {
+    const input = core.getInput(name).trim();
+    if (!input) {
+        return fallback;
+    }
+    const parsed = Number.parseInt(input, 10);
+    if (!Number.isFinite(parsed)) {
+        core.warning(`${name} must be an integer between ${min} and ${max}. Falling back to ${fallback}.`);
+        return fallback;
+    }
+    if (parsed < min) {
+        core.warning(`${name} must be at least ${min}. Using ${min}.`);
+        return min;
+    }
+    if (parsed > max) {
+        core.warning(`${name} must be at most ${max}. Using ${max}.`);
+        return max;
+    }
+    return parsed;
+}
+const MODEL_ID_PATTERN = /^[a-zA-Z0-9._:-]+$/;
+const GITHUB_TOKEN = getRequiredInput("GITHUB_TOKEN");
+const OPENAI_API_KEY = getRequiredInput("OPENAI_API_KEY");
+const OPENAI_API_MODEL = getOptionalInput("OPENAI_API_MODEL", "gpt-4");
+const INCLUDE_FIX_PROMPT = core.getInput("include_fix_prompt").trim().toLowerCase() !== "false";
+const SUMMARY_ONCE = core.getInput("summary_once").trim().toLowerCase() !== "false";
+const FIX_PROMPT_MAX_ITEMS = getBoundedIntInput("fix_prompt_max_items", 20, 1, 200);
+const SUMMARY_MARKER = "<!-- ai-code-reviewer-summary -->";
+if (!MODEL_ID_PATTERN.test(OPENAI_API_MODEL)) {
+    throw new Error("OPENAI_API_MODEL contains invalid characters. Use letters, numbers, '.', '_', '-', or ':'.");
+}
 const octokit = new rest_1.Octokit({ auth: GITHUB_TOKEN });
 const openai = new openai_1.default({
     apiKey: OPENAI_API_KEY,
@@ -62,10 +97,22 @@ function getRequiredEventPath() {
     }
     return eventPath;
 }
-function getPRDetails() {
+function getEventData() {
+    var _a, _b, _c;
+    const eventRaw = (0, fs_1.readFileSync)(getRequiredEventPath(), "utf8");
+    const eventData = JSON.parse(eventRaw);
+    if (!((_b = (_a = eventData.repository) === null || _a === void 0 ? void 0 : _a.owner) === null || _b === void 0 ? void 0 : _b.login) ||
+        !((_c = eventData.repository) === null || _c === void 0 ? void 0 : _c.name) ||
+        typeof eventData.number !== "number" ||
+        !eventData.action) {
+        throw new Error("GitHub event payload is missing required pull request fields");
+    }
+    return eventData;
+}
+function getPRDetails(eventData) {
     var _a, _b;
     return __awaiter(this, void 0, void 0, function* () {
-        const { repository, number } = JSON.parse((0, fs_1.readFileSync)(getRequiredEventPath(), "utf8"));
+        const { repository, number } = eventData;
         const prResponse = yield octokit.pulls.get({
             owner: repository.owner.login,
             repo: repository.name,
@@ -283,6 +330,104 @@ function createComment(file, chunk, aiResponses) {
         };
     });
 }
+function normalizeIssueText(text) {
+    return text.replace(/\s+/g, " ").trim();
+}
+function sanitizeForCodeBlock(text) {
+    return text.replace(/```/g, "'''");
+}
+function getUniqueIssues(comments) {
+    const seen = new Set();
+    const issues = [];
+    for (const comment of comments) {
+        const normalizedBody = normalizeIssueText(comment.body).toLowerCase();
+        const issueKey = `${comment.path}:${comment.line}:${normalizedBody}`;
+        if (seen.has(issueKey)) {
+            continue;
+        }
+        seen.add(issueKey);
+        issues.push(Object.assign(Object.assign({}, comment), { body: normalizeIssueText(comment.body) }));
+    }
+    return issues;
+}
+function createFixPromptSection(comments, prDetails) {
+    const uniqueIssues = getUniqueIssues(comments).slice(0, FIX_PROMPT_MAX_ITEMS);
+    if (uniqueIssues.length === 0) {
+        return null;
+    }
+    const issueList = uniqueIssues
+        .map((issue, index) => {
+        const truncatedBody = issue.body.length > 400
+            ? `${issue.body.slice(0, 397).trimEnd()}...`
+            : issue.body;
+        return `${index + 1}. ${issue.path}:${issue.line} - ${sanitizeForCodeBlock(truncatedBody)}`;
+    })
+        .join("\n");
+    const prDescription = sanitizeForCodeBlock(prDetails.description.trim()) ||
+        "(no description provided)";
+    const fixPrompt = `You are an AI coding agent. Fix the issues listed below for this pull request.
+
+Pull request title: ${sanitizeForCodeBlock(prDetails.title)}
+Pull request description:
+${prDescription}
+
+Issues to fix:
+${issueList}
+
+Constraints:
+- Make the smallest safe set of changes needed to resolve the issues.
+- Preserve existing behavior unless an issue explicitly requires a behavior change.
+- Update or add tests when needed to cover the fix.
+- Run project checks (lint/build/tests) and ensure they pass.
+
+Return:
+- A short summary of what you changed.
+- The list of files modified.
+- Any follow-up work that remains.`;
+    return `## Fix Prompt
+
+Use this prompt with your coding agent to address the detected issues:
+
+\`\`\`text
+${fixPrompt}
+\`\`\``;
+}
+function buildReviewBody(summary, fixPromptSection) {
+    const sections = [summary, fixPromptSection]
+        .filter((section) => Boolean(section && section.trim()))
+        .map((section) => section.trim());
+    if (sections.length === 0) {
+        return undefined;
+    }
+    return `${sections.join("\n\n")}\n\n${SUMMARY_MARKER}`;
+}
+function hasExistingSummaryReview(owner, repo, pull_number) {
+    return __awaiter(this, void 0, void 0, function* () {
+        let page = 1;
+        while (true) {
+            const response = yield octokit.pulls.listReviews({
+                owner,
+                repo,
+                pull_number,
+                per_page: 100,
+                page,
+            });
+            const hasSummary = response.data.some((review) => {
+                const body = review.body || "";
+                return (body.includes(SUMMARY_MARKER) ||
+                    body.includes("## Fix Prompt") ||
+                    body.includes("### Summary of Pull Request Review"));
+            });
+            if (hasSummary) {
+                return true;
+            }
+            if (response.data.length < 100) {
+                return false;
+            }
+            page += 1;
+        }
+    });
+}
 function createReviewComment(owner, repo, pull_number, comments, summaryBody) {
     return __awaiter(this, void 0, void 0, function* () {
         const reviewPayload = {
@@ -323,15 +468,18 @@ function createReviewComment(owner, repo, pull_number, comments, summaryBody) {
 }
 function main() {
     return __awaiter(this, void 0, void 0, function* () {
-        const prDetails = yield getPRDetails();
+        const eventData = getEventData();
+        const prDetails = yield getPRDetails(eventData);
         let diff;
-        const eventData = JSON.parse((0, fs_1.readFileSync)(getRequiredEventPath(), "utf8"));
         if (eventData.action === "opened") {
             diff = yield getDiff(prDetails.owner, prDetails.repo, prDetails.pull_number);
         }
         else if (eventData.action === "synchronize") {
             const newBaseSha = eventData.before;
             const newHeadSha = eventData.after;
+            if (!newBaseSha || !newHeadSha) {
+                throw new Error("Missing before/after SHAs for synchronize event");
+            }
             const response = yield octokit.repos.compareCommits({
                 headers: {
                     accept: "application/vnd.github.v3.diff",
@@ -360,9 +508,17 @@ function main() {
             return !excludePatterns.some((pattern) => { var _a; return (0, minimatch_1.default)((_a = file.to) !== null && _a !== void 0 ? _a : "", pattern); });
         });
         const comments = yield analyzeCode(filteredDiff, prDetails);
-        const summaryPrompt = createSummaryPrompt(filteredDiff, prDetails);
-        const summary = yield getAISummary(summaryPrompt);
-        yield createReviewComment(prDetails.owner, prDetails.repo, prDetails.pull_number, comments, summary || undefined);
+        const shouldIncludeSummary = SUMMARY_ONCE
+            ? !(yield hasExistingSummaryReview(prDetails.owner, prDetails.repo, prDetails.pull_number))
+            : true;
+        const summary = shouldIncludeSummary
+            ? yield getAISummary(createSummaryPrompt(filteredDiff, prDetails))
+            : null;
+        const fixPromptSection = shouldIncludeSummary && INCLUDE_FIX_PROMPT
+            ? createFixPromptSection(comments, prDetails)
+            : null;
+        const reviewBody = buildReviewBody(summary, fixPromptSection);
+        yield createReviewComment(prDetails.owner, prDetails.repo, prDetails.pull_number, comments, reviewBody);
     });
 }
 main().catch((error) => {

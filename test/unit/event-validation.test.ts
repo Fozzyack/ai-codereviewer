@@ -7,6 +7,7 @@ const mockState = vi.hoisted(() => {
     pullsGet: vi.fn(),
     compareCommits: vi.fn(),
     createReview: vi.fn(),
+    listReviews: vi.fn(),
     createCompletion: vi.fn(),
     readFileSync: vi.fn(),
   };
@@ -23,6 +24,7 @@ vi.mock("@octokit/rest", () => ({
     pulls = {
       get: mockState.pullsGet,
       createReview: mockState.createReview,
+      listReviews: mockState.listReviews,
     };
 
     repos = {
@@ -103,6 +105,7 @@ index 1111111..2222222 100644
     mockState.createCompletion.mockResolvedValue({
       choices: [{ message: { content: '{"reviews":[]}' } }],
     });
+    mockState.listReviews.mockResolvedValue({ data: [] });
 
     mockState.createReview.mockResolvedValue({});
   });
@@ -139,10 +142,8 @@ index 1111111..2222222 100644
       },
     });
 
-    mockState.pullsGet.mockRejectedValueOnce(
-      new Error("Validation Failed: pull_number is required")
+    await expect(main()).rejects.toThrow(
+      "GitHub event payload is missing required pull request fields"
     );
-
-    await expect(main()).rejects.toThrow("pull_number is required");
   });
 });

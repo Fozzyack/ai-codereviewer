@@ -5,9 +5,68 @@ import { Octokit } from "@octokit/rest";
 import parseDiff, { Chunk, File } from "parse-diff";
 import minimatch from "minimatch";
 
-const GITHUB_TOKEN: string = core.getInput("GITHUB_TOKEN");
-const OPENAI_API_KEY: string = core.getInput("OPENAI_API_KEY");
-const OPENAI_API_MODEL: string = core.getInput("OPENAI_API_MODEL");
+function getRequiredInput(name: string): string {
+  return core.getInput(name, { required: true }).trim();
+}
+
+function getOptionalInput(name: string, fallback: string): string {
+  const input = core.getInput(name).trim();
+  return input || fallback;
+}
+
+function getBoundedIntInput(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const input = core.getInput(name).trim();
+  if (!input) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(input, 10);
+  if (!Number.isFinite(parsed)) {
+    core.warning(
+      `${name} must be an integer between ${min} and ${max}. Falling back to ${fallback}.`
+    );
+    return fallback;
+  }
+
+  if (parsed < min) {
+    core.warning(`${name} must be at least ${min}. Using ${min}.`);
+    return min;
+  }
+
+  if (parsed > max) {
+    core.warning(`${name} must be at most ${max}. Using ${max}.`);
+    return max;
+  }
+
+  return parsed;
+}
+
+const MODEL_ID_PATTERN = /^[a-zA-Z0-9._:-]+$/;
+const GITHUB_TOKEN: string = getRequiredInput("GITHUB_TOKEN");
+const OPENAI_API_KEY: string = getRequiredInput("OPENAI_API_KEY");
+const OPENAI_API_MODEL: string = getOptionalInput("OPENAI_API_MODEL", "gpt-4");
+const INCLUDE_FIX_PROMPT: boolean =
+  core.getInput("include_fix_prompt").trim().toLowerCase() !== "false";
+const SUMMARY_ONCE: boolean =
+  core.getInput("summary_once").trim().toLowerCase() !== "false";
+const FIX_PROMPT_MAX_ITEMS: number = getBoundedIntInput(
+  "fix_prompt_max_items",
+  20,
+  1,
+  200
+);
+const SUMMARY_MARKER = "<!-- ai-code-reviewer-summary -->";
+
+if (!MODEL_ID_PATTERN.test(OPENAI_API_MODEL)) {
+  throw new Error(
+    "OPENAI_API_MODEL contains invalid characters. Use letters, numbers, '.', '_', '-', or ':'."
+  );
+}
 
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
 
@@ -28,6 +87,25 @@ export interface AIReview {
   reviewComment: string;
 }
 
+interface ReviewComment {
+  body: string;
+  path: string;
+  line: number;
+}
+
+interface EventData {
+  action: string;
+  before?: string;
+  after?: string;
+  number: number;
+  repository: {
+    owner: {
+      login: string;
+    };
+    name: string;
+  };
+}
+
 export function getRequiredEventPath(): string {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath) {
@@ -36,15 +114,32 @@ export function getRequiredEventPath(): string {
   return eventPath;
 }
 
-async function getPRDetails(): Promise<PRDetails> {
-  const { repository, number } = JSON.parse(
-    readFileSync(getRequiredEventPath(), "utf8")
-  );
+function getEventData(): EventData {
+  const eventRaw = readFileSync(getRequiredEventPath(), "utf8");
+  const eventData = JSON.parse(eventRaw) as Partial<EventData>;
+
+  if (
+    !eventData.repository?.owner?.login ||
+    !eventData.repository?.name ||
+    typeof eventData.number !== "number" ||
+    !eventData.action
+  ) {
+    throw new Error(
+      "GitHub event payload is missing required pull request fields"
+    );
+  }
+
+  return eventData as EventData;
+}
+
+async function getPRDetails(eventData: EventData): Promise<PRDetails> {
+  const { repository, number } = eventData;
   const prResponse = await octokit.pulls.get({
     owner: repository.owner.login,
     repo: repository.name,
     pull_number: number,
   });
+
   return {
     owner: repository.owner.login,
     repo: repository.name,
@@ -72,11 +167,12 @@ async function getDiff(
 async function analyzeCode(
   parsedDiff: File[],
   prDetails: PRDetails
-): Promise<Array<{ body: string; path: string; line: number }>> {
-  const comments: Array<{ body: string; path: string; line: number }> = [];
+): Promise<ReviewComment[]> {
+  const comments: ReviewComment[] = [];
 
   for (const file of parsedDiff) {
-    if (file.to === "/dev/null") continue; // Ignore deleted files
+    if (file.to === "/dev/null") continue;
+
     for (const chunk of file.chunks) {
       const prompt = createPrompt(file, chunk, prDetails);
       const aiResponse = await getAIResponse(prompt);
@@ -88,6 +184,7 @@ async function analyzeCode(
       }
     }
   }
+
   return comments;
 }
 
@@ -166,7 +263,7 @@ export function createPrompt(
 Review the following code diff in the file "${
     file.to
   }" and take the pull request title and description into account when writing the response.
-  
+
 Pull request title: ${prDetails.title}
 Pull request description:
 
@@ -207,6 +304,7 @@ export function parseAIReviewsContent(content: string): AIReview[] {
       ) {
         return null;
       }
+
       return {
         lineNumber,
         reviewComment,
@@ -215,10 +313,9 @@ export function parseAIReviewsContent(content: string): AIReview[] {
     .filter((review): review is AIReview => review !== null);
 }
 
-export async function getAIResponse(prompt: string): Promise<Array<{
-  lineNumber: number;
-  reviewComment: string;
-}> | null> {
+export async function getAIResponse(
+  prompt: string
+): Promise<AIReview[] | null> {
   const queryConfig = {
     model: OPENAI_API_MODEL,
     temperature: 0.2,
@@ -231,7 +328,6 @@ export async function getAIResponse(prompt: string): Promise<Array<{
   try {
     const response = await openai.chat.completions.create({
       ...queryConfig,
-      // return JSON if the model supports it:
       ...(OPENAI_API_MODEL === "gpt-4-1106-preview"
         ? { response_format: { type: "json_object" } }
         : {}),
@@ -284,7 +380,7 @@ export function createComment(
   file: File,
   chunk: Chunk,
   aiResponses: AIReview[]
-): Array<{ body: string; path: string; line: number }> {
+): ReviewComment[] {
   const validLines = getCommentableLines(chunk);
 
   return aiResponses.flatMap((aiResponse) => {
@@ -302,11 +398,145 @@ export function createComment(
   });
 }
 
+function normalizeIssueText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function sanitizeForCodeBlock(text: string): string {
+  return text.replace(/```/g, "'''");
+}
+
+function getUniqueIssues(comments: ReviewComment[]): ReviewComment[] {
+  const seen = new Set<string>();
+  const issues: ReviewComment[] = [];
+
+  for (const comment of comments) {
+    const normalizedBody = normalizeIssueText(comment.body).toLowerCase();
+    const issueKey = `${comment.path}:${comment.line}:${normalizedBody}`;
+    if (seen.has(issueKey)) {
+      continue;
+    }
+    seen.add(issueKey);
+    issues.push({
+      ...comment,
+      body: normalizeIssueText(comment.body),
+    });
+  }
+
+  return issues;
+}
+
+function createFixPromptSection(
+  comments: ReviewComment[],
+  prDetails: PRDetails
+): string | null {
+  const uniqueIssues = getUniqueIssues(comments).slice(0, FIX_PROMPT_MAX_ITEMS);
+
+  if (uniqueIssues.length === 0) {
+    return null;
+  }
+
+  const issueList = uniqueIssues
+    .map((issue, index) => {
+      const truncatedBody =
+        issue.body.length > 400
+          ? `${issue.body.slice(0, 397).trimEnd()}...`
+          : issue.body;
+      return `${index + 1}. ${issue.path}:${
+        issue.line
+      } - ${sanitizeForCodeBlock(truncatedBody)}`;
+    })
+    .join("\n");
+
+  const prDescription =
+    sanitizeForCodeBlock(prDetails.description.trim()) ||
+    "(no description provided)";
+  const fixPrompt = `You are an AI coding agent. Fix the issues listed below for this pull request.
+
+Pull request title: ${sanitizeForCodeBlock(prDetails.title)}
+Pull request description:
+${prDescription}
+
+Issues to fix:
+${issueList}
+
+Constraints:
+- Make the smallest safe set of changes needed to resolve the issues.
+- Preserve existing behavior unless an issue explicitly requires a behavior change.
+- Update or add tests when needed to cover the fix.
+- Run project checks (lint/build/tests) and ensure they pass.
+
+Return:
+- A short summary of what you changed.
+- The list of files modified.
+- Any follow-up work that remains.`;
+
+  return `## Fix Prompt
+
+Use this prompt with your coding agent to address the detected issues:
+
+\`\`\`text
+${fixPrompt}
+\`\`\``;
+}
+
+function buildReviewBody(
+  summary: string | null,
+  fixPromptSection: string | null
+): string | undefined {
+  const sections = [summary, fixPromptSection]
+    .filter((section): section is string => Boolean(section && section.trim()))
+    .map((section) => section.trim());
+
+  if (sections.length === 0) {
+    return undefined;
+  }
+
+  return `${sections.join("\n\n")}\n\n${SUMMARY_MARKER}`;
+}
+
+async function hasExistingSummaryReview(
+  owner: string,
+  repo: string,
+  pull_number: number
+): Promise<boolean> {
+  let page = 1;
+
+  while (true) {
+    const response = await octokit.pulls.listReviews({
+      owner,
+      repo,
+      pull_number,
+      per_page: 100,
+      page,
+    });
+
+    const hasSummary = response.data.some((review) => {
+      const body = review.body || "";
+      return (
+        body.includes(SUMMARY_MARKER) ||
+        body.includes("## Fix Prompt") ||
+        body.includes("### Summary of Pull Request Review")
+      );
+    });
+
+    if (hasSummary) {
+      return true;
+    }
+
+    if (response.data.length < 100) {
+      return false;
+    }
+
+    page += 1;
+  }
+}
+
 export async function createReviewComment(
   owner: string,
   repo: string,
   pull_number: number,
-  comments: Array<{ body: string; path: string; line: number }>,
+  comments: ReviewComment[],
   summaryBody?: string
 ): Promise<void> {
   const reviewPayload: {
@@ -374,9 +604,9 @@ export function filterDiffByExclude(
 }
 
 export async function main() {
-  const prDetails = await getPRDetails();
+  const eventData = getEventData();
+  const prDetails = await getPRDetails(eventData);
   let diff: string | null;
-  const eventData = JSON.parse(readFileSync(getRequiredEventPath(), "utf8"));
 
   if (eventData.action === "opened") {
     diff = await getDiff(
@@ -387,6 +617,10 @@ export async function main() {
   } else if (eventData.action === "synchronize") {
     const newBaseSha = eventData.before;
     const newHeadSha = eventData.after;
+
+    if (!newBaseSha || !newHeadSha) {
+      throw new Error("Missing before/after SHAs for synchronize event");
+    }
 
     const response = await octokit.repos.compareCommits({
       headers: {
@@ -417,15 +651,29 @@ export async function main() {
   );
 
   const comments = await analyzeCode(filteredDiff, prDetails);
-  const summaryPrompt = createSummaryPrompt(filteredDiff, prDetails);
-  const summary = await getAISummary(summaryPrompt);
+  const shouldIncludeSummary = SUMMARY_ONCE
+    ? !(await hasExistingSummaryReview(
+        prDetails.owner,
+        prDetails.repo,
+        prDetails.pull_number
+      ))
+    : true;
+
+  const summary = shouldIncludeSummary
+    ? await getAISummary(createSummaryPrompt(filteredDiff, prDetails))
+    : null;
+  const fixPromptSection =
+    shouldIncludeSummary && INCLUDE_FIX_PROMPT
+      ? createFixPromptSection(comments, prDetails)
+      : null;
+  const reviewBody = buildReviewBody(summary, fixPromptSection);
 
   await createReviewComment(
     prDetails.owner,
     prDetails.repo,
     prDetails.pull_number,
     comments,
-    summary || undefined
+    reviewBody
   );
 }
 
