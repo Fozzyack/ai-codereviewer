@@ -55,10 +55,17 @@ const octokit = new rest_1.Octokit({ auth: GITHUB_TOKEN });
 const openai = new openai_1.default({
     apiKey: OPENAI_API_KEY,
 });
+function getRequiredEventPath() {
+    const eventPath = process.env.GITHUB_EVENT_PATH;
+    if (!eventPath) {
+        throw new Error("GITHUB_EVENT_PATH is not set");
+    }
+    return eventPath;
+}
 function getPRDetails() {
     var _a, _b;
     return __awaiter(this, void 0, void 0, function* () {
-        const { repository, number } = JSON.parse((0, fs_1.readFileSync)(process.env.GITHUB_EVENT_PATH || "", "utf8"));
+        const { repository, number } = JSON.parse((0, fs_1.readFileSync)(getRequiredEventPath(), "utf8"));
         const prResponse = yield octokit.pulls.get({
             owner: repository.owner.login,
             repo: repository.name,
@@ -105,7 +112,55 @@ function analyzeCode(parsedDiff, prDetails) {
         return comments;
     });
 }
+function getCommentableLines(chunk) {
+    const lines = new Set();
+    for (const change of chunk.changes) {
+        if (change.type === "del")
+            continue;
+        // @ts-expect-error - ln2 exists on non-deleted changes
+        if (typeof change.ln2 === "number") {
+            // @ts-expect-error - ln2 exists on non-deleted changes
+            lines.add(change.ln2);
+        }
+    }
+    return lines;
+}
+function createSummaryPrompt(parsedDiff, prDetails) {
+    const MAX_DIFF_CHARS = 12000;
+    const summarizedDiff = parsedDiff
+        .map((file) => {
+        const chunkPreview = file.chunks
+            .slice(0, 3)
+            .map((chunk) => chunk.content)
+            .join("\n");
+        return `File: ${file.to}\n${chunkPreview}`;
+    })
+        .join("\n\n")
+        .slice(0, MAX_DIFF_CHARS);
+    const usedChars = summarizedDiff.length;
+    return `You are reviewing a pull request. Provide a concise GitHub Markdown summary.
+
+Instructions:
+- Focus on the overall impact, key risks, and recommended follow-up checks.
+- If there are no major concerns, explicitly say that no critical issues were found.
+- Do not provide compliments or mention writing code comments.
+- Keep it short: 3 to 6 bullet points.
+
+Pull request title: ${prDetails.title}
+Pull request description:
+
+---
+${prDetails.description}
+---
+
+Changed files and diff excerpts (truncated to ${usedChars} chars):
+
+\`\`\`diff
+${summarizedDiff}
+\`\`\``;
+}
 function createPrompt(file, chunk, prDetails) {
+    const commentableLines = Array.from(getCommentableLines(chunk)).sort((a, b) => a - b);
     return `Your task is to review pull requests. Instructions:
 - Provide the response in following JSON format:  {"reviews": [{"lineNumber":  <line_number>, "reviewComment": "<review comment>"}]}
 - Do not give positive comments or compliments.
@@ -113,6 +168,7 @@ function createPrompt(file, chunk, prDetails) {
 - Write the comment in GitHub Markdown format.
 - Use the given description only for the overall context and only comment the code.
 - IMPORTANT: NEVER suggest adding comments to the code.
+- Only use line numbers that are in this list: [${commentableLines.join(", ")}]
 
 Review the following code diff in the file "${file.to}" and take the pull request title and description into account when writing the response.
   
@@ -135,7 +191,7 @@ ${chunk.changes
 `;
 }
 function getAIResponse(prompt) {
-    var _a, _b;
+    var _a, _b, _c;
     return __awaiter(this, void 0, void 0, function* () {
         const queryConfig = {
             model: OPENAI_API_MODEL,
@@ -154,8 +210,56 @@ function getAIResponse(prompt) {
                         content: prompt,
                     },
                 ] }));
-            const res = ((_b = (_a = response.choices[0].message) === null || _a === void 0 ? void 0 : _a.content) === null || _b === void 0 ? void 0 : _b.trim()) || "{}";
-            return JSON.parse(res).reviews;
+            const res = ((_c = (_b = (_a = response.choices[0]) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.content) === null || _c === void 0 ? void 0 : _c.trim()) || "{}";
+            const parsed = JSON.parse(res);
+            const rawReviews = Array.isArray(parsed.reviews)
+                ? parsed.reviews
+                : [];
+            return rawReviews
+                .map((review) => {
+                const typedReview = review;
+                const lineNumber = Number(typedReview.lineNumber);
+                const reviewComment = typeof typedReview.reviewComment === "string"
+                    ? typedReview.reviewComment
+                    : "";
+                if (!Number.isFinite(lineNumber) ||
+                    lineNumber <= 0 ||
+                    !reviewComment.trim()) {
+                    return null;
+                }
+                return {
+                    lineNumber,
+                    reviewComment,
+                };
+            })
+                .filter((review) => review !== null);
+        }
+        catch (error) {
+            console.error("Error:", error);
+            return null;
+        }
+    });
+}
+function getAISummary(prompt) {
+    var _a, _b, _c;
+    return __awaiter(this, void 0, void 0, function* () {
+        const queryConfig = {
+            model: OPENAI_API_MODEL,
+            temperature: 0.2,
+            max_tokens: 400,
+            top_p: 1,
+            frequency_penalty: 0,
+            presence_penalty: 0,
+        };
+        try {
+            const response = yield openai.chat.completions.create(Object.assign(Object.assign({}, queryConfig), { messages: [
+                    {
+                        role: "system",
+                        content: prompt,
+                    },
+                ] }));
+            const summary = (_c = (_b = (_a = response.choices[0]) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.content) === null || _c === void 0 ? void 0 : _c.trim();
+            return summary || null;
         }
         catch (error) {
             console.error("Error:", error);
@@ -164,34 +268,64 @@ function getAIResponse(prompt) {
     });
 }
 function createComment(file, chunk, aiResponses) {
+    const validLines = getCommentableLines(chunk);
     return aiResponses.flatMap((aiResponse) => {
         if (!file.to) {
             return [];
         }
+        if (!validLines.has(aiResponse.lineNumber)) {
+            return [];
+        }
         return {
             body: aiResponse.reviewComment,
-            path: file.to,
+            path: file.to.replace(/^b\//, ""),
             line: Number(aiResponse.lineNumber),
         };
     });
 }
-function createReviewComment(owner, repo, pull_number, comments) {
+function createReviewComment(owner, repo, pull_number, comments, summaryBody) {
     return __awaiter(this, void 0, void 0, function* () {
-        yield octokit.pulls.createReview({
+        const reviewPayload = {
             owner,
             repo,
             pull_number,
-            comments,
             event: "COMMENT",
-        });
+        };
+        if (comments.length > 0) {
+            reviewPayload.comments = comments;
+        }
+        if (summaryBody) {
+            reviewPayload.body = summaryBody;
+        }
+        if (!reviewPayload.comments && !reviewPayload.body) {
+            core.info("No summary or inline comments to post.");
+            return;
+        }
+        try {
+            yield octokit.pulls.createReview(reviewPayload);
+        }
+        catch (error) {
+            const status = error.status;
+            if (status === 422 && reviewPayload.body) {
+                core.warning("Some inline comments could not be resolved. Retrying with summary only.");
+                yield octokit.pulls.createReview({
+                    owner,
+                    repo,
+                    pull_number,
+                    event: "COMMENT",
+                    body: reviewPayload.body,
+                });
+                return;
+            }
+            throw error;
+        }
     });
 }
 function main() {
-    var _a;
     return __awaiter(this, void 0, void 0, function* () {
         const prDetails = yield getPRDetails();
         let diff;
-        const eventData = JSON.parse((0, fs_1.readFileSync)((_a = process.env.GITHUB_EVENT_PATH) !== null && _a !== void 0 ? _a : "", "utf8"));
+        const eventData = JSON.parse((0, fs_1.readFileSync)(getRequiredEventPath(), "utf8"));
         if (eventData.action === "opened") {
             diff = yield getDiff(prDetails.owner, prDetails.repo, prDetails.pull_number);
         }
@@ -226,9 +360,9 @@ function main() {
             return !excludePatterns.some((pattern) => { var _a; return (0, minimatch_1.default)((_a = file.to) !== null && _a !== void 0 ? _a : "", pattern); });
         });
         const comments = yield analyzeCode(filteredDiff, prDetails);
-        if (comments.length > 0) {
-            yield createReviewComment(prDetails.owner, prDetails.repo, prDetails.pull_number, comments);
-        }
+        const summaryPrompt = createSummaryPrompt(filteredDiff, prDetails);
+        const summary = yield getAISummary(summaryPrompt);
+        yield createReviewComment(prDetails.owner, prDetails.repo, prDetails.pull_number, comments, summary || undefined);
     });
 }
 main().catch((error) => {
