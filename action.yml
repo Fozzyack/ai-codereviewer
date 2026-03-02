@@ -24,7 +24,7 @@ inputs:
     required: false
     default: "true"
   fix_prompt_max_items:
-    description: "Maximum number of unique issues included in the fix prompt"
+    description: "Maximum number of unique issues in the fix prompt (1-200)"
     required: false
     default: "20"
 runs:

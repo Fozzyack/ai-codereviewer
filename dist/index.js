@@ -55,15 +55,23 @@ function getOptionalInput(name, fallback) {
     const input = core.getInput(name).trim();
     return input || fallback;
 }
-function getPositiveIntInput(name, fallback) {
+function getBoundedIntInput(name, fallback, min, max) {
     const input = core.getInput(name).trim();
     if (!input) {
         return fallback;
     }
     const parsed = Number.parseInt(input, 10);
-    if (!Number.isFinite(parsed) || parsed < 1) {
-        core.warning(`${name} must be a positive integer. Falling back to ${fallback}.`);
+    if (!Number.isFinite(parsed)) {
+        core.warning(`${name} must be an integer between ${min} and ${max}. Falling back to ${fallback}.`);
         return fallback;
+    }
+    if (parsed < min) {
+        core.warning(`${name} must be at least ${min}. Using ${min}.`);
+        return min;
+    }
+    if (parsed > max) {
+        core.warning(`${name} must be at most ${max}. Using ${max}.`);
+        return max;
     }
     return parsed;
 }
@@ -73,7 +81,7 @@ const OPENAI_API_KEY = getRequiredInput("OPENAI_API_KEY");
 const OPENAI_API_MODEL = getOptionalInput("OPENAI_API_MODEL", "gpt-4");
 const INCLUDE_FIX_PROMPT = core.getInput("include_fix_prompt").trim().toLowerCase() !== "false";
 const SUMMARY_ONCE = core.getInput("summary_once").trim().toLowerCase() !== "false";
-const FIX_PROMPT_MAX_ITEMS = getPositiveIntInput("fix_prompt_max_items", 20);
+const FIX_PROMPT_MAX_ITEMS = getBoundedIntInput("fix_prompt_max_items", 20, 1, 200);
 const SUMMARY_MARKER = "<!-- ai-code-reviewer-summary -->";
 if (!MODEL_ID_PATTERN.test(OPENAI_API_MODEL)) {
     throw new Error("OPENAI_API_MODEL contains invalid characters. Use letters, numbers, '.', '_', '-', or ':'.");
@@ -391,7 +399,7 @@ function buildReviewBody(summary, fixPromptSection) {
     if (sections.length === 0) {
         return undefined;
     }
-    return `${SUMMARY_MARKER}\n${sections.join("\n\n")}`;
+    return `${sections.join("\n\n")}\n\n${SUMMARY_MARKER}`;
 }
 function hasExistingSummaryReview(owner, repo, pull_number) {
     return __awaiter(this, void 0, void 0, function* () {

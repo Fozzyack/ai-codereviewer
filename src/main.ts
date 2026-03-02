@@ -14,17 +14,30 @@ function getOptionalInput(name: string, fallback: string): string {
   return input || fallback;
 }
 
-function getPositiveIntInput(name: string, fallback: number): number {
+function getBoundedIntInput(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number
+): number {
   const input = core.getInput(name).trim();
   if (!input) {
     return fallback;
   }
   const parsed = Number.parseInt(input, 10);
-  if (!Number.isFinite(parsed) || parsed < 1) {
+  if (!Number.isFinite(parsed)) {
     core.warning(
-      `${name} must be a positive integer. Falling back to ${fallback}.`
+      `${name} must be an integer between ${min} and ${max}. Falling back to ${fallback}.`
     );
     return fallback;
+  }
+  if (parsed < min) {
+    core.warning(`${name} must be at least ${min}. Using ${min}.`);
+    return min;
+  }
+  if (parsed > max) {
+    core.warning(`${name} must be at most ${max}. Using ${max}.`);
+    return max;
   }
   return parsed;
 }
@@ -37,9 +50,11 @@ const INCLUDE_FIX_PROMPT: boolean =
   core.getInput("include_fix_prompt").trim().toLowerCase() !== "false";
 const SUMMARY_ONCE: boolean =
   core.getInput("summary_once").trim().toLowerCase() !== "false";
-const FIX_PROMPT_MAX_ITEMS: number = getPositiveIntInput(
+const FIX_PROMPT_MAX_ITEMS: number = getBoundedIntInput(
   "fix_prompt_max_items",
-  20
+  20,
+  1,
+  200
 );
 const SUMMARY_MARKER = "<!-- ai-code-reviewer-summary -->";
 
@@ -460,7 +475,7 @@ function buildReviewBody(
     return undefined;
   }
 
-  return `${SUMMARY_MARKER}\n${sections.join("\n\n")}`;
+  return `${sections.join("\n\n")}\n\n${SUMMARY_MARKER}`;
 }
 
 async function hasExistingSummaryReview(

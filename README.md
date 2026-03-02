@@ -48,7 +48,7 @@ jobs:
           exclude: "**/*.json, **/*.md" # Optional: exclude patterns separated by commas
           include_fix_prompt: "true" # Optional: include agent-ready fix prompt in summary (default: true)
           summary_once: "true" # Optional: post summary/fix prompt only once per PR (default: true)
-          fix_prompt_max_items: "20" # Optional: max unique issues included in fix prompt (default: 20)
+          fix_prompt_max_items: "20" # Optional: max unique issues included in fix prompt (1-200, default: 20)
 ```
 
 4. Replace `your-username` with your GitHub username or organization name where the AI Code Reviewer repository is
@@ -62,9 +62,11 @@ jobs:
 
 The AI Code Reviewer GitHub Action retrieves the pull request diff, filters out excluded files, and sends code chunks to
 the OpenAI API. It generates both an overall pull request summary and inline review comments, then posts them back as a
-GitHub review. It can also include a deterministic "Fix Prompt" section in the summary, built from detected issues with
-file and line references, so you can copy it directly into an AI coding agent. By default, the summary/fix prompt is
-posted only once per pull request, while inline comments continue on later updates.
+GitHub review.
+
+It can also include a deterministic "Fix Prompt" section in the summary, built from detected issues with file and line
+references, so you can copy it directly into an AI coding agent. By default, the summary/fix prompt is posted only once
+per pull request, while inline comments continue on later updates.
 
 ## Contributing
 
